@@ -1,11 +1,13 @@
 import os
 import sys
 import json
+import re
 import threading
 import time
 import base64
 import uuid
 import random
+import shutil
 from datetime import datetime, timedelta
 
 from PyQt6.QtWidgets import (
@@ -16,7 +18,7 @@ from PyQt6.QtWidgets import (
     QCalendarWidget, QDateTimeEdit, QGridLayout, QSpinBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QDate, QDateTime, QTime
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QImage, QTextCharFormat, QColor, QBrush
+from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QImage, QTextCharFormat, QColor, QBrush, QIcon
 
 import schedule
 from playwright.sync_api import sync_playwright
@@ -159,40 +161,69 @@ class AIService:
         return order
 
     def _build_prompt(self, caption_prompt="", hashtag_prompt="", keyword_prompt=""):
-        """Build the combined prompt for all providers."""
-        default_caption_prompt = "Write an engaging social media caption for this image. Be concise and compelling."
-        default_hashtag_prompt = "Generate 5-10 relevant hashtags for this image. Return only the hashtags separated by spaces."
-        default_keyword_prompt = "Generate 5-7 SEO keywords for this image. Return only the keywords separated by commas."
+        """Build the combined prompt for all providers using JSON format."""
+        default_caption_prompt = "Write a viral, engaging social media caption that drives engagement. Use emotional triggers, be compelling and benefit-focused. Keep it concise (100-150 characters)."
+        default_hashtag_prompt = "Generate 8-12 trending, viral-worthy hashtags focusing on buyer intent and engagement. Mix popular and niche hashtags."
+        default_keyword_prompt = "Generate 7-10 SEO-optimized longtail keywords focusing on search intent, trending terms, and specific content attributes."
 
         final_caption_prompt = caption_prompt if caption_prompt.strip() else default_caption_prompt
         final_hashtag_prompt = hashtag_prompt if hashtag_prompt.strip() else default_hashtag_prompt
         final_keyword_prompt = keyword_prompt if keyword_prompt.strip() else default_keyword_prompt
 
-        return f"""Analyze this image and provide the following:
+        return f"""You are an expert social media content strategist specializing in creating viral, conversion-focused posts.
 
-1. CAPTION: {final_caption_prompt}
+Analyze this image and generate optimized social media content:
 
-2. HASHTAGS: {final_hashtag_prompt}
+1. **Caption**: {final_caption_prompt}
+2. **Hashtags**: {final_hashtag_prompt}
+3. **Keywords**: {final_keyword_prompt}
 
-3. KEYWORDS: {final_keyword_prompt}
+Focus on:
+- Emotional triggers and storytelling
+- Benefit-driven language (not just features)
+- Viral-worthy, shareable content
+- Platform-optimized formatting
+- Trending topics and search terms
 
-Format your response exactly like this:
-CAPTION: [your caption here]
-HASHTAGS: [your hashtags here]
-KEYWORDS: [your keywords here]"""
+Respond ONLY with valid JSON in this exact format:
+{{
+  "caption": "Your compelling caption here",
+  "hashtags": "#hashtag1 #hashtag2 #hashtag3 ...",
+  "keywords": "keyword1, keyword2, keyword3, ..."
+}}"""
 
     def _parse_response(self, response_text):
-        """Parse the AI response into structured data."""
+        """Parse the AI response into structured data using JSON extraction."""
         result = {'caption': '', 'hashtags': '', 'keywords': ''}
 
-        for line in response_text.split('\n'):
-            line = line.strip()
-            if line.upper().startswith('CAPTION:'):
-                result['caption'] = line[8:].strip()
-            elif line.upper().startswith('HASHTAGS:'):
-                result['hashtags'] = line[9:].strip()
-            elif line.upper().startswith('KEYWORDS:'):
-                result['keywords'] = line[9:].strip()
+        try:
+            # Try to extract JSON from the response (handles cases with extra text)
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                parsed_data = json.loads(json_match.group(0))
+                result['caption'] = parsed_data.get('caption', '')
+                result['hashtags'] = parsed_data.get('hashtags', '')
+                result['keywords'] = parsed_data.get('keywords', '')
+            else:
+                # Fallback to line-by-line parsing for backwards compatibility
+                for line in response_text.split('\n'):
+                    line = line.strip()
+                    if line.upper().startswith('CAPTION:'):
+                        result['caption'] = line[8:].strip()
+                    elif line.upper().startswith('HASHTAGS:'):
+                        result['hashtags'] = line[9:].strip()
+                    elif line.upper().startswith('KEYWORDS:'):
+                        result['keywords'] = line[9:].strip()
+        except (json.JSONDecodeError, Exception) as e:
+            # If JSON parsing fails, try fallback parsing
+            for line in response_text.split('\n'):
+                line = line.strip()
+                if line.upper().startswith('CAPTION:'):
+                    result['caption'] = line[8:].strip()
+                elif line.upper().startswith('HASHTAGS:'):
+                    result['hashtags'] = line[9:].strip()
+                elif line.upper().startswith('KEYWORDS:'):
+                    result['keywords'] = line[9:].strip()
 
         return result
 
@@ -235,8 +266,8 @@ KEYWORDS: [your keywords here]"""
 
             if media_data and media_type:
                 message = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1024,
+                    model="claude-sonnet-4-5-20250929",
+                    max_tokens=2000,
                     messages=[
                         {
                             "role": "user",
@@ -257,8 +288,8 @@ KEYWORDS: [your keywords here]"""
             else:
                 filename = os.path.basename(media_path)
                 message = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1024,
+                    model="claude-sonnet-4-5-20250929",
+                    max_tokens=2000,
                     messages=[
                         {
                             "role": "user",
@@ -368,17 +399,28 @@ KEYWORDS: [your keywords here]"""
 
             if response:
                 result = self._parse_response(response)
+
+                # Validate that we got actual content
+                if not result.get('caption') and not result.get('hashtags') and not result.get('keywords'):
+                    errors.append(f"{provider}: Failed to parse response - no content extracted")
+                    print(f"DEBUG: Failed to parse {provider} response:", response[:200])
+                    continue
+
                 result['provider'] = provider
+                print(f"SUCCESS: Generated content using {provider}")
                 return result
             else:
                 errors.append(f"{provider}: {error}")
+                print(f"ERROR: {provider} failed - {error}")
 
         # All providers failed
+        error_msg = "All providers failed: " + "; ".join(errors)
+        print(f"CRITICAL ERROR: {error_msg}")
         return {
             'caption': '',
             'hashtags': '',
             'keywords': '',
-            'error': "All providers failed: " + "; ".join(errors)
+            'error': error_msg
         }
 
 
@@ -1455,6 +1497,9 @@ class QueueCard(QFrame):
 # --------------------------------------------------------------------
 
 class SocialRocket(QMainWindow):
+    # Create a signal for AI content updates
+    ai_content_ready = pyqtSignal(dict)
+
     def __init__(self):
         super().__init__()
 
@@ -1463,6 +1508,11 @@ class SocialRocket(QMainWindow):
 
         self.setWindowTitle("Social Rocket")
         self.resize(1000, 800)
+
+        # Set window icon
+        icon_pixmap = QPixmap("logo.jpg")
+        if not icon_pixmap.isNull():
+            self.setWindowIcon(QIcon(icon_pixmap))
 
         self.scheduler_running = False
         self.scheduler_thread = None
@@ -1480,18 +1530,37 @@ class SocialRocket(QMainWindow):
         self.queue_data = []
         self.load_queue_data()
 
+        # Creative library (list of media paths)
+        self.creative_library = []
+        self.load_creative_library()
+
+        # Connect AI content signal
+        self.ai_content_ready.connect(self.update_ai_fields)
+
         self._build_ui()
 
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
 
+        # Set app background to match logo
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #0d202f;
+            }
+            QWidget {
+                background-color: #0d202f;
+            }
+        """)
+
         # Main scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background-color: #0d202f; border: none; }")
 
         scroll_content = QWidget()
+        scroll_content.setStyleSheet("QWidget { background-color: #0d202f; }")
         main_layout = QVBoxLayout(scroll_content)
         main_layout.setSpacing(10)
 
@@ -1500,12 +1569,21 @@ class SocialRocket(QMainWindow):
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.addWidget(scroll)
 
-        # Top bar with settings
+        # Top bar with logo
         top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(10, 10, 10, 10)
 
-        title = QLabel("Social Rocket")
-        title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        top_bar.addWidget(title)
+        # Logo
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("logo.jpg")
+        if not logo_pixmap.isNull():
+            scaled_logo = logo_pixmap.scaled(300, 80, Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(scaled_logo)
+        else:
+            logo_label.setText("Social Rocket")
+            logo_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        top_bar.addWidget(logo_label)
 
         top_bar.addStretch()
 
@@ -1520,76 +1598,119 @@ class SocialRocket(QMainWindow):
         self.creative_card.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
         self.creative_card.setStyleSheet("""
             QFrame {
-                background-color: #808080;
-                border: 2px solid #5A5A5A;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #667eea, stop:1 #764ba2);
+                border: 3px solid #A78BFA;
                 border-radius: 12px;
                 padding: 15px;
             }
         """)
         creative_layout = QVBoxLayout(self.creative_card)
-        creative_layout.setSpacing(10)
+        creative_layout.setSpacing(12)
 
-        # Header row with button and file label
+        # Header row with Add Creative button
         header_row = QHBoxLayout()
 
-        self.choose_file_btn = QPushButton("Choose from Computer")
-        self.choose_file_btn.setMinimumHeight(45)
-        self.choose_file_btn.setStyleSheet("""
+        header_label = QLabel("✨ Creative Library")
+        header_label.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: bold;")
+        header_row.addWidget(header_label)
+        header_row.addStretch()
+
+        self.add_creative_btn = QPushButton("+ Add Creative")
+        self.add_creative_btn.setMinimumHeight(40)
+        self.add_creative_btn.setStyleSheet("""
             QPushButton {
                 font-size: 13px;
                 font-weight: bold;
-                background-color: #5D4037;
+                background-color: #10B981;
                 color: white;
                 border-radius: 8px;
                 padding: 8px 20px;
+                border: 2px solid #34D399;
             }
             QPushButton:hover {
-                background-color: #4E342E;
+                background-color: #059669;
+                border: 2px solid #10B981;
             }
         """)
-        self.choose_file_btn.clicked.connect(self.choose_media_file)
-        header_row.addWidget(self.choose_file_btn)
-
-        self.file_label = QLabel("No file selected")
-        self.file_label.setStyleSheet("color: #E0E0E0; font-size: 12px; font-weight: bold;")
-        header_row.addWidget(self.file_label)
-        header_row.addStretch()
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.clear_current)
-        self.clear_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11px;
-                background-color: #A89078;
-                color: white;
-                padding: 4px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #8B7355;
-            }
-        """)
-        header_row.addWidget(self.clear_btn)
+        self.add_creative_btn.clicked.connect(self.add_creative_to_library)
+        header_row.addWidget(self.add_creative_btn)
 
         creative_layout.addLayout(header_row)
+
+        # Creative Gallery (scrollable horizontal thumbnails)
+        gallery_label = QLabel("📸 Your Creatives:")
+        gallery_label.setStyleSheet("color: #F3F4F6; font-size: 12px; font-style: italic; font-weight: 500;")
+        creative_layout.addWidget(gallery_label)
+
+        # Scrollable area for thumbnails
+        self.gallery_scroll = QScrollArea()
+        self.gallery_scroll.setWidgetResizable(True)
+        self.gallery_scroll.setFixedHeight(140)
+        self.gallery_scroll.setStyleSheet("""
+            QScrollArea {
+                background-color: rgba(255, 255, 255, 0.15);
+                border: 2px solid rgba(255, 255, 255, 0.3);
+                border-radius: 8px;
+            }
+            QScrollBar:horizontal {
+                height: 12px;
+                background-color: rgba(0, 0, 0, 0.2);
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #A78BFA;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #C4B5FD;
+            }
+        """)
+
+        # Container for thumbnails
+        self.gallery_widget = QWidget()
+        self.gallery_layout = QHBoxLayout(self.gallery_widget)
+        self.gallery_layout.setSpacing(10)
+        self.gallery_layout.setContentsMargins(10, 10, 10, 10)
+        self.gallery_layout.addStretch()
+
+        self.gallery_scroll.setWidget(self.gallery_widget)
+        creative_layout.addWidget(self.gallery_scroll)
+
+        # Divider
+        divider = QLabel()
+        divider.setFixedHeight(2)
+        divider.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #A78BFA, stop:0.5 #FCD34D, stop:1 #A78BFA);")
+        creative_layout.addWidget(divider)
+
+        # Selected Creative Section
+        selected_label = QLabel("🎨 Selected Creative:")
+        selected_label.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold;")
+        creative_layout.addWidget(selected_label)
 
         # Content row: Preview on left, fields on right
         content_row = QHBoxLayout()
 
-        # Media preview
+        # Media preview (larger)
         self.preview_label = QLabel()
-        self.preview_label.setFixedSize(250, 180)
+        self.preview_label.setFixedSize(300, 220)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setStyleSheet("""
             QLabel {
-                background-color: #606060;
-                border: 1px solid #4A4A4A;
+                background-color: rgba(255, 255, 255, 0.15);
+                border: 2px solid #C4B5FD;
                 border-radius: 8px;
-                color: #D0D0D0;
+                color: #F3F4F6;
+                font-size: 13px;
             }
         """)
-        self.preview_label.setText("No media\nselected")
+        self.preview_label.setText("No creative\nselected")
         content_row.addWidget(self.preview_label)
+
+        # File info label
+        self.file_label = QLabel("Select a creative from the gallery above")
+        self.file_label.setStyleSheet("color: #E0E7FF; font-size: 11px; font-style: italic;")
+        self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.file_label.setWordWrap(True)
 
         # Fields column
         fields_layout = QVBoxLayout()
@@ -1731,14 +1852,14 @@ class SocialRocket(QMainWindow):
         self.schedule_btn.setEnabled(False)
         self.schedule_btn.setStyleSheet("""
             QPushButton {
-                background-color: #2196F3;
+                background-color: #2E7D32;
                 color: white;
                 font-weight: bold;
                 padding: 8px 16px;
                 border-radius: 6px;
             }
             QPushButton:hover {
-                background-color: #1976D2;
+                background-color: #1B5E20;
             }
             QPushButton:disabled {
                 background-color: #ccc;
@@ -1751,14 +1872,14 @@ class SocialRocket(QMainWindow):
         self.post_now_btn.setEnabled(False)
         self.post_now_btn.setStyleSheet("""
             QPushButton {
-                background-color: #FF9800;
+                background-color: #1877F2;
                 color: white;
                 font-weight: bold;
                 padding: 8px 16px;
                 border-radius: 6px;
             }
             QPushButton:hover {
-                background-color: #F57C00;
+                background-color: #0C63D4;
             }
             QPushButton:disabled {
                 background-color: #ccc;
@@ -1840,6 +1961,7 @@ class SocialRocket(QMainWindow):
         self.setStatusBar(self.status)
 
         self.refresh_queue_display()
+        self.refresh_gallery()  # Load creative library thumbnails
         mode = "DRY-RUN (no real posts)" if DRY_RUN else "LIVE (will post to platforms)"
         self.append_log(f"App started. Mode: {mode}")
 
@@ -1859,8 +1981,188 @@ class SocialRocket(QMainWindow):
             save_config(settings)
             self.append_log("Settings saved.")
 
+    def load_creative_library(self):
+        """Load creative library from disk."""
+        library_file = os.path.join(QUEUE_DIR, 'creative_library.json')
+        if os.path.exists(library_file):
+            try:
+                with open(library_file, 'r') as f:
+                    self.creative_library = json.load(f)
+            except:
+                self.creative_library = []
+        else:
+            self.creative_library = []
+
+    def save_creative_library(self):
+        """Save creative library to disk."""
+        library_file = os.path.join(QUEUE_DIR, 'creative_library.json')
+        with open(library_file, 'w') as f:
+            json.dump(self.creative_library, f, indent=2)
+
+    def add_creative_to_library(self):
+        """Add a new creative to the library."""
+        file_filter = "Media Files (*.png *.jpg *.jpeg *.gif *.webp *.svg *.mp4 *.mov *.avi *.webm *.html *.htm);;All Files (*)"
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Creative(s) to Library",
+            "",
+            file_filter
+        )
+
+        for file_path in file_paths:
+            if file_path and file_path not in self.creative_library:
+                # Copy file to queue directory
+                filename = os.path.basename(file_path)
+                dest_path = os.path.join(QUEUE_DIR, f"creative_{uuid.uuid4().hex[:8]}_{filename}")
+
+                try:
+                    shutil.copy2(file_path, dest_path)
+                    self.creative_library.append(dest_path)
+                    self.append_log(f"Added creative: {filename}")
+                except Exception as e:
+                    self.append_log(f"Error adding creative: {e}")
+
+        self.save_creative_library()
+        self.refresh_gallery()
+
+    def refresh_gallery(self):
+        """Refresh the creative gallery thumbnails."""
+        # Clear existing thumbnails
+        for i in reversed(range(self.gallery_layout.count())):
+            widget = self.gallery_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+
+        # Add thumbnails for each creative
+        for media_path in self.creative_library:
+            if not os.path.exists(media_path):
+                continue
+
+            thumb = self.create_thumbnail(media_path)
+            self.gallery_layout.insertWidget(self.gallery_layout.count() - 1, thumb)
+
+    def create_thumbnail(self, media_path):
+        """Create a clickable thumbnail widget for a creative."""
+        thumb_frame = QFrame()
+        thumb_frame.setFixedSize(100, 100)
+        thumb_frame.setStyleSheet("""
+            QFrame {
+                background-color: #505050;
+                border: 2px solid #707070;
+                border-radius: 6px;
+            }
+            QFrame:hover {
+                border: 2px solid #90CAF9;
+                background-color: #606060;
+            }
+        """)
+        thumb_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        thumb_layout = QVBoxLayout(thumb_frame)
+        thumb_layout.setContentsMargins(3, 3, 3, 3)
+        thumb_layout.setSpacing(2)
+
+        # Thumbnail image
+        thumb_label = QLabel()
+        thumb_label.setFixedSize(94, 70)
+        thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb_label.setScaledContents(False)
+
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            pixmap = QPixmap(media_path)
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(94, 70, Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                thumb_label.setPixmap(pixmap)
+            else:
+                thumb_label.setText("IMG")
+                thumb_label.setStyleSheet("color: #B0B0B0; font-size: 10px;")
+        elif ext in VIDEO_EXTENSIONS:
+            thumb_label.setText("VIDEO")
+            thumb_label.setStyleSheet("color: #B0B0B0; font-size: 10px;")
+        else:
+            thumb_label.setText("FILE")
+            thumb_label.setStyleSheet("color: #B0B0B0; font-size: 10px;")
+
+        thumb_layout.addWidget(thumb_label)
+
+        # Filename label
+        name_label = QLabel(os.path.basename(media_path)[:12] + "...")
+        name_label.setStyleSheet("color: #D0D0D0; font-size: 8px;")
+        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb_layout.addWidget(name_label)
+
+        # Remove button (X)
+        remove_btn = QPushButton("×")
+        remove_btn.setFixedSize(18, 18)
+        remove_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border-radius: 9px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        remove_btn.clicked.connect(lambda: self.remove_creative_from_library(media_path))
+
+        # Position remove button in top-right corner
+        remove_btn.setParent(thumb_frame)
+        remove_btn.move(78, 2)
+
+        # Click handler for selecting creative
+        thumb_frame.mousePressEvent = lambda event: self.select_creative(media_path)
+
+        return thumb_frame
+
+    def select_creative(self, media_path):
+        """Select a creative from the gallery."""
+        self.current_media_path = media_path
+        self.file_label.setText(os.path.basename(media_path))
+
+        # Update preview
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            pixmap = QPixmap(media_path)
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(300, 220, Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                self.preview_label.setPixmap(pixmap)
+            else:
+                self.preview_label.setText(f"Image:\n{os.path.basename(media_path)}")
+        elif ext in VIDEO_EXTENSIONS:
+            self.preview_label.setText(f"🎥 Video:\n{os.path.basename(media_path)}")
+        elif ext in WEB_EXTENSIONS:
+            self.preview_label.setText(f"🌐 HTML:\n{os.path.basename(media_path)}")
+
+        # Enable buttons
+        self.schedule_btn.setEnabled(True)
+        self.post_now_btn.setEnabled(True)
+        self.regenerate_btn.setEnabled(True)
+
+        # Auto-generate content
+        self.append_log(f"Selected creative: {os.path.basename(media_path)}")
+        self.generate_ai_content()
+
+    def remove_creative_from_library(self, media_path):
+        """Remove a creative from the library."""
+        if media_path in self.creative_library:
+            self.creative_library.remove(media_path)
+            self.save_creative_library()
+            self.refresh_gallery()
+            self.append_log(f"Removed creative: {os.path.basename(media_path)}")
+
+            # If it was the currently selected creative, clear it
+            if self.current_media_path == media_path:
+                self.clear_current()
+
     def choose_media_file(self):
-        """Open file dialog to choose media file."""
+        """Open file dialog to choose media file (legacy - now uses add_creative_to_library)."""
         file_filter = "Media Files (*.png *.jpg *.jpeg *.gif *.webp *.svg *.mp4 *.mov *.avi *.webm *.html *.htm);;All Files (*)"
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1904,7 +2206,10 @@ class SocialRocket(QMainWindow):
 
     def generate_ai_content(self):
         """Generate caption, hashtags, and keywords using AI."""
+        print(f"DEBUG: generate_ai_content called, media_path={self.current_media_path}")
+
         if not self.current_media_path:
+            print("DEBUG: No media path, returning")
             return
 
         # Check if any API key is configured
@@ -1912,6 +2217,8 @@ class SocialRocket(QMainWindow):
         has_key = (config.get('anthropic_key') or
                    config.get('openai_key') or
                    config.get('gemini_key'))
+
+        print(f"DEBUG: API key configured: {has_key}")
 
         if not has_key:
             self.append_log("ERROR: No API keys configured. Go to Settings > AI tab to add your API key.")
@@ -1923,6 +2230,7 @@ class SocialRocket(QMainWindow):
             )
             return
 
+        print("DEBUG: Starting AI generation...")
         self.append_log("Generating AI content...")
         self.status.showMessage("Analyzing media with AI...")
 
@@ -1933,33 +2241,49 @@ class SocialRocket(QMainWindow):
 
         # Run in a thread to avoid blocking UI
         def generate():
+            print("DEBUG: Thread started, calling AI service...")
             result = self.ai_service.analyze_media(
                 self.current_media_path,
                 self.caption_prompt.text(),
                 self.hashtag_prompt.text(),
                 self.keyword_prompt.text()
             )
+            print(f"DEBUG: AI service returned: {result}")
 
-            # Update UI from main thread
-            QTimer.singleShot(0, lambda: self.update_ai_fields(result))
+            # Emit signal to update UI from main thread
+            print("DEBUG: Emitting ai_content_ready signal...")
+            self.ai_content_ready.emit(result)
 
         thread = threading.Thread(target=generate, daemon=True)
         thread.start()
+        print("DEBUG: Thread started")
 
     def update_ai_fields(self, result):
         """Update the UI fields with AI-generated content."""
+        print(f"DEBUG: update_ai_fields called with result: {result}")
+
         if 'error' in result and result['error']:
             self.append_log(f"AI generation error: {result['error']}")
             self.status.showMessage("AI generation failed", 3000)
+            print(f"ERROR: AI generation failed - {result['error']}")
             return
 
-        self.caption_input.setPlainText(result.get('caption', ''))
-        self.hashtag_input.setText(result.get('hashtags', ''))
-        self.keyword_input.setText(result.get('keywords', ''))
+        caption = result.get('caption', '')
+        hashtags = result.get('hashtags', '')
+        keywords = result.get('keywords', '')
+
+        print(f"DEBUG: Setting caption: {caption[:50]}...")
+        print(f"DEBUG: Setting hashtags: {hashtags[:50]}...")
+        print(f"DEBUG: Setting keywords: {keywords[:50]}...")
+
+        self.caption_input.setPlainText(caption)
+        self.hashtag_input.setText(hashtags)
+        self.keyword_input.setText(keywords)
 
         provider = result.get('provider', 'Unknown')
         self.append_log(f"AI content generated successfully using {provider}.")
         self.status.showMessage(f"Generated with {provider}", 3000)
+        print(f"SUCCESS: UI updated with content from {provider}")
 
     def regenerate_content(self):
         """Regenerate content with custom prompts."""
@@ -2376,6 +2700,19 @@ class SocialRocket(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+
+    # Create and show splash screen
+    from PyQt6.QtWidgets import QSplashScreen
+
+    splash_pix = QPixmap("logo.jpg")
+    if not splash_pix.isNull():
+        splash = QSplashScreen(splash_pix, Qt.WindowType.WindowStaysOnTopHint)
+        splash.show()
+        app.processEvents()
+
+        # Show splash for 2 seconds
+        QTimer.singleShot(2000, splash.close)
+
     win = SocialRocket()
     win.show()
     sys.exit(app.exec())
