@@ -923,10 +923,41 @@ class ContentCalendar(QCalendarWidget):
         self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
         self.clicked.connect(self.on_date_clicked)
 
+        # Disable scroll wheel navigation - only use arrow buttons
+        self.setNavigationBarVisible(True)
+
+        # Install event filter to block wheel events on all child widgets
+        self.installEventFilter(self)
+
+        # Block wheel events on all child widgets (including internal table)
+        for child in self.findChildren(QWidget):
+            child.installEventFilter(self)
+
         # Style for dates with posts
         self.post_format = QTextCharFormat()
         self.post_format.setBackground(QBrush(QColor("#4CAF50")))
         self.post_format.setForeground(QBrush(QColor("white")))
+
+    def eventFilter(self, obj, event):
+        """Filter out wheel events to prevent month scrolling."""
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.Wheel:
+            # Block all wheel events
+            return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event):
+        """Override wheel event to disable scroll-based month navigation."""
+        # Accept and do nothing to prevent month scrolling
+        event.accept()
+        return
+
+    def showEvent(self, event):
+        """Re-install event filters when widget is shown (catches lazy-loaded children)."""
+        super().showEvent(event)
+        # Install event filter on all children including lazy-loaded ones
+        for child in self.findChildren(QWidget):
+            child.installEventFilter(self)
 
     def set_scheduled_dates(self, queue_data):
         """Update the calendar with scheduled post dates."""
@@ -1862,7 +1893,8 @@ class SocialRocket(QMainWindow):
                 background-color: #1B5E20;
             }
             QPushButton:disabled {
-                background-color: #ccc;
+                background-color: #81C784;
+                color: #C8E6C9;
             }
         """)
         action_row.addWidget(self.schedule_btn)
@@ -1882,7 +1914,8 @@ class SocialRocket(QMainWindow):
                 background-color: #0C63D4;
             }
             QPushButton:disabled {
-                background-color: #ccc;
+                background-color: #90CAF9;
+                color: #E3F2FD;
             }
         """)
         action_row.addWidget(self.post_now_btn)
