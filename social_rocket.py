@@ -8,7 +8,15 @@ import base64
 import uuid
 import random
 import shutil
+import subprocess
 from datetime import datetime, timedelta
+
+# Load .env file if it exists (for secure credential management)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Loads .env file into environment variables
+except ImportError:
+    pass  # python-dotenv not installed, will use config.json or env vars directly
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -51,12 +59,12 @@ except ImportError:
 # CONFIG
 # --------------------------------------------------------------------
 
-DRY_RUN = True  # flip to False when you're ready to go live
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUEUE_DIR = os.path.join(BASE_DIR, "queue")
 POSTED_DIR = os.path.join(BASE_DIR, "posted")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+HISTORY_FILE = os.path.join(BASE_DIR, "post_history.json")
+PROJECTS_FILE = os.path.join(BASE_DIR, "projects.json")
 
 # Times to post (24h format)
 POST_TIMES = ["07:00", "12:00", "17:00"]
@@ -75,6 +83,34 @@ DEFAULT_BEST_TIMES = {
 
 # All supported platforms
 ALL_PLATFORMS = ['X', 'Threads', 'LinkedIn', 'Reddit', 'Facebook', 'Instagram', 'TikTok', 'Quora']
+
+# Default content type templates (used when no project-specific ones exist)
+DEFAULT_CONTENT_TYPES = {
+    'general': {
+        'name': 'General',
+        'caption_prompt': 'Write a compelling social media caption that highlights the key value proposition. Keep it punchy and engaging (100-150 chars).',
+        'hashtag_prompt': 'Generate 8-12 relevant hashtags mixing industry-specific terms and trending tags.',
+        'keyword_prompt': 'Generate SEO keywords relevant to the content and industry.'
+    },
+    'educational': {
+        'name': 'Educational / Tips',
+        'caption_prompt': 'Write an educational caption with a helpful tip or insight. Use curiosity hooks. Be helpful, not salesy.',
+        'hashtag_prompt': 'Generate hashtags focused on education, tips, and how-to content.',
+        'keyword_prompt': 'Generate keywords: tips, how to, advice, guide, tutorial, best practices.'
+    },
+    'success_story': {
+        'name': 'Success Story / Social Proof',
+        'caption_prompt': 'Write an inspiring caption about success or achievement. Use social proof language. Create FOMO and credibility.',
+        'hashtag_prompt': 'Generate hashtags: success, achievement, testimonial, results-focused tags.',
+        'keyword_prompt': 'Generate keywords: success stories, testimonials, case study, results, achievements.'
+    },
+    'announcement': {
+        'name': 'Announcement / News',
+        'caption_prompt': 'Write a timely announcement or news update. Create urgency and include a call-to-action.',
+        'hashtag_prompt': 'Generate hashtags: news, update, announcement, trending, breaking tags.',
+        'keyword_prompt': 'Generate keywords: news, update, announcement, latest, new release.'
+    }
+}
 
 # Platform colors (brand colors)
 PLATFORM_COLORS = {
@@ -118,20 +154,274 @@ THREADS_PASSWORD = ""
 # --------------------------------------------------------------------
 
 def load_config():
-    """Load configuration from JSON file."""
+    """
+    Load configuration from JSON file with environment variable fallback.
+
+    Environment variables take precedence over config.json for security.
+    Supported env vars:
+    - ANTHROPIC_API_KEY
+    - OPENAI_API_KEY
+    - GEMINI_API_KEY
+    - X_USERNAME, X_PASSWORD
+    - LINKEDIN_EMAIL, LINKEDIN_PASSWORD
+    - FACEBOOK_EMAIL, FACEBOOK_PASSWORD
+    etc.
+    """
+    config = {}
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                config = json.load(f)
         except Exception:
             pass
-    return {}
+
+    # Override with environment variables if they exist (more secure)
+    env_mappings = {
+        'ANTHROPIC_API_KEY': 'anthropic_key',
+        'OPENAI_API_KEY': 'openai_key',
+        'GEMINI_API_KEY': 'gemini_key',
+        'X_USERNAME': 'x_username',
+        'X_PASSWORD': 'x_password',
+        'LINKEDIN_EMAIL': 'linkedin_email',
+        'LINKEDIN_PASSWORD': 'linkedin_password',
+        'FACEBOOK_EMAIL': 'facebook_email',
+        'FACEBOOK_PASSWORD': 'facebook_password',
+        'FACEBOOK_URL': 'facebook_url',
+        'THREADS_USERNAME': 'threads_username',
+        'THREADS_PASSWORD': 'threads_password',
+        'REDDIT_USERNAME': 'reddit_username',
+        'REDDIT_PASSWORD': 'reddit_password',
+        'INSTAGRAM_USERNAME': 'instagram_username',
+        'INSTAGRAM_PASSWORD': 'instagram_password',
+    }
+
+    for env_var, config_key in env_mappings.items():
+        value = os.environ.get(env_var)
+        if value:
+            config[config_key] = value
+
+    return config
 
 
 def save_config(config):
     """Save configuration to JSON file."""
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
+
+
+def load_post_history():
+    """Load post history from JSON file."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_post_history(history):
+    """Save post history to JSON file."""
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2)
+
+
+def add_to_history(post_data, platforms, result_info):
+    """Add a completed post to history."""
+    history = load_post_history()
+
+    history_entry = {
+        'id': post_data.get('id', str(uuid.uuid4())[:8]),
+        'posted_at': datetime.now().isoformat(),
+        'scheduled_time': post_data.get('scheduled_time', ''),
+        'caption': post_data.get('caption', ''),
+        'hashtags': post_data.get('hashtags', ''),
+        'keywords': post_data.get('keywords', ''),
+        'platforms': platforms,
+        'result': result_info,
+        'media_filename': os.path.basename(post_data.get('media_path', '')) if post_data.get('media_path') else '',
+        'notes': '',  # User can add performance notes later
+        'engagement': {}  # Can be manually updated with likes, comments, shares, etc.
+    }
+
+    history.insert(0, history_entry)  # Most recent first
+
+    # Keep only last 500 posts
+    history = history[:500]
+
+    save_post_history(history)
+    return history_entry
+
+
+def load_projects():
+    """Load projects from JSON file."""
+    if os.path.exists(PROJECTS_FILE):
+        try:
+            with open(PROJECTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_projects(projects):
+    """Save projects to JSON file."""
+    with open(PROJECTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(projects, f, indent=2)
+
+
+def create_default_projects():
+    """Create default projects including FSBOz."""
+    return [
+        {
+            'id': 'fsboz',
+            'name': 'FSBOz',
+            'industry': 'Real Estate',
+            'sub_industry': 'FSBO Marketplace',
+            'content_types': {
+                'general': {
+                    'name': 'General',
+                    'caption_prompt': 'Write a compelling caption for FSBOz (For Sale By Owner marketplace). Focus on empowering homeowners to sell without agents, saving thousands in commissions. Use emotional triggers around financial freedom and control. Keep it punchy (100-150 chars).',
+                    'hashtag_prompt': 'Generate 8-12 hashtags mixing: FSBO terms (#FSBO #ForSaleByOwner #SellYourHome), real estate (#RealEstate #HomeSelling #PropertySale), and money-saving (#NoCommission #SaveMoney #HomeOwner). Include 2-3 trending tags.',
+                    'keyword_prompt': 'Generate SEO keywords for FSBO real estate: sell home without agent, for sale by owner, save realtor commission, list home yourself, FSBO listing, home selling tips.'
+                },
+                'property_search': {
+                    'name': 'Property Search',
+                    'caption_prompt': 'Write a caption promoting FSBOz Property Search with 165+ filters. Emphasize finding the perfect home without agent pressure. Highlight buyer empowerment and comprehensive search tools. Keep it engaging (100-150 chars).',
+                    'hashtag_prompt': 'Generate hashtags for property search: #HouseHunting #HomeBuyer #PropertySearch #FindYourHome #DreamHome #RealEstateSearch #HomeShopping #BuyerMarket plus trending real estate tags.',
+                    'keyword_prompt': 'Generate SEO keywords: property search, home search filters, find homes for sale, buy home without agent, house hunting tools, advanced property search, real estate listings.'
+                },
+                'seller_tips': {
+                    'name': 'Seller Tips',
+                    'caption_prompt': 'Write an educational caption with a FSBO selling tip. Position FSBOz as the expert resource. Use curiosity hooks like "Most sellers don\'t know..." or "The #1 mistake FSBO sellers make...". Be helpful, not salesy.',
+                    'hashtag_prompt': 'Generate hashtags: #FSBOTips #HomeSelling #RealEstateTips #SellingSmart #HomeSellerTips #PropertyTips #FSBOSuccess plus 3-4 engagement hashtags.',
+                    'keyword_prompt': 'Generate keywords: FSBO tips, how to sell home yourself, for sale by owner advice, home selling mistakes, FSBO pricing, home staging tips, sell house fast.'
+                },
+                'success_story': {
+                    'name': 'Success Story',
+                    'caption_prompt': 'Write an inspiring caption about FSBO success. Use social proof language: "Another homeowner just saved $X" or "Meet [Name] who sold in X days". Create FOMO and credibility.',
+                    'hashtag_prompt': 'Generate hashtags: #FSBOSuccess #SoldByOwner #HomeownerWin #RealEstateSuccess #SavedThousands #FSBOWorks #SuccessStory plus celebration/achievement hashtags.',
+                    'keyword_prompt': 'Generate keywords: FSBO success stories, sold by owner, FSBO testimonials, save realtor fees, successful home sale, FSBO case study.'
+                },
+                'market_update': {
+                    'name': 'Market Update',
+                    'caption_prompt': 'Write a timely caption about real estate market conditions that positions selling FSBO as smart in the current market. Use urgency without being pushy. Include a call-to-action.',
+                    'hashtag_prompt': 'Generate hashtags: #RealEstateMarket #HousingMarket #MarketUpdate #RealEstate2024 #HomePrices #SellerMarket #BuyerMarket plus location and trending tags.',
+                    'keyword_prompt': 'Generate keywords: real estate market, housing market trends, home prices, seller market, buyer market, best time to sell, market conditions.'
+                }
+            }
+        },
+        {
+            'id': 'social_rocket',
+            'name': 'Social Rocket',
+            'industry': 'SaaS',
+            'sub_industry': 'Social Media Automation',
+            'content_types': {
+                'general': {
+                    'name': 'General',
+                    'caption_prompt': 'Write a caption for Social Rocket (social media automation tool). Emphasize time savings, consistency, and growth. Target busy entrepreneurs and marketers.',
+                    'hashtag_prompt': 'Generate hashtags: #SocialMediaAutomation #ContentMarketing #DigitalMarketing #MarketingTools #SocialMediaStrategy #GrowthHacking',
+                    'keyword_prompt': 'Generate keywords: social media automation, content scheduling, social media management, automated posting, marketing tools.'
+                },
+                'feature': {
+                    'name': 'Feature Highlight',
+                    'caption_prompt': 'Highlight a specific Social Rocket feature (AI content generation, multi-platform posting, scheduling). Show how it solves a pain point.',
+                    'hashtag_prompt': 'Generate hashtags: #ProductFeatures #SocialMediaTools #Automation #AIContentGeneration #MarketingAutomation',
+                    'keyword_prompt': 'Generate keywords: AI content generation, multi-platform posting, social media scheduler, automated content creation.'
+                }
+            }
+        }
+    ]
+
+
+# --------------------------------------------------------------------
+# 1PASSWORD INTEGRATION
+# --------------------------------------------------------------------
+
+class OnePasswordHelper:
+    """Helper class for retrieving credentials from 1Password."""
+
+    @staticmethod
+    def is_available():
+        """Check if 1Password CLI is installed and can access desktop app."""
+        try:
+            # First check if op command exists
+            result = subprocess.run(['op', '--version'], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                return False
+
+            # Try to list accounts - this works even without explicit signin if desktop app is running
+            result = subprocess.run(['op', 'account', 'list'], capture_output=True, text=True, timeout=5)
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def get_credential(item_name, field_name=None):
+        """
+        Retrieve a credential from 1Password.
+
+        Args:
+            item_name: Name of the 1Password item (e.g., "X (Twitter)")
+            field_name: Specific field to retrieve (e.g., "username", "password")
+                       If None, returns the password field by default
+
+        Returns:
+            The credential value or None if not found
+        """
+        try:
+            if field_name:
+                # Get specific field
+                cmd = ['op', 'item', 'get', item_name, '--field', field_name]
+            else:
+                # Get default password field
+                cmd = ['op', 'item', 'get', item_name, '--field', 'password']
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                print(f"1Password error for {item_name}/{field_name}: {result.stderr}")
+                return None
+        except Exception as e:
+            print(f"1Password exception: {e}")
+            return None
+
+    @staticmethod
+    def get_credentials_for_platform(platform_name):
+        """
+        Get username and password for a platform from 1Password.
+
+        Args:
+            platform_name: Platform name (e.g., "X", "LinkedIn", "Facebook")
+
+        Returns:
+            Tuple of (username, password) or (None, None) if not found
+        """
+        # Map platform names to 1Password item names
+        item_mapping = {
+            'X': 'X (Twitter)',
+            'Twitter': 'X (Twitter)',
+            'LinkedIn': 'LinkedIn',
+            'Facebook': 'Facebook',
+            'Instagram': 'Instagram',
+            'Threads': 'Threads',
+            'Reddit': 'Reddit',
+            'TikTok': 'TikTok',
+            'Quora': 'Quora',
+        }
+
+        item_name = item_mapping.get(platform_name, platform_name)
+
+        # Try to get username (could be 'username', 'email', or other fields)
+        username = (OnePasswordHelper.get_credential(item_name, 'username') or
+                   OnePasswordHelper.get_credential(item_name, 'email') or
+                   OnePasswordHelper.get_credential(item_name, 'user'))
+
+        password = OnePasswordHelper.get_credential(item_name, 'password')
+
+        return username, password
 
 
 # --------------------------------------------------------------------
@@ -434,85 +724,416 @@ def post_to_x(text, image_path=None):
     username = config.get('x_username', '')
     password = config.get('x_password', '')
 
+    # Try 1Password if credentials not in config
+    if (not username or not password) and OnePasswordHelper.is_available():
+        print("DEBUG: Attempting to fetch X credentials from 1Password...")
+        op_username, op_password = OnePasswordHelper.get_credentials_for_platform('X')
+        if op_username and op_password:
+            username = op_username
+            password = op_password
+            print("DEBUG: Successfully retrieved X credentials from 1Password")
+        else:
+            print("DEBUG: Could not retrieve X credentials from 1Password")
+
     if not username or not password:
-        return False, "X credentials not configured. Please set them in Settings."
+        return False, "X credentials not configured. Please set them in Settings or 1Password."
 
     browser = None
+    # Path to store persistent browser session
+    session_dir = os.path.join(BASE_DIR, ".browser_sessions", "x_session")
+    os.makedirs(os.path.dirname(session_dir), exist_ok=True)
+
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(viewport={"width": 1280, "height": 720})
-            page = context.new_page()
+            # Launch with persistent context to save login session
+            print("DEBUG: Launching browser with persistent session...")
+            context = p.chromium.launch_persistent_context(
+                session_dir,
+                headless=False,  # Change to True once working
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.pages[0] if context.pages else context.new_page()
 
-            page.goto("https://x.com/login", timeout=60000)
+            # Check if already logged in
+            print("DEBUG: Checking if already logged in...")
+            page.goto("https://x.com/home", timeout=60000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
 
+            # Check if we're on the home page (logged in)
+            is_logged_in = page.query_selector('a[data-testid="SideNav_NewPost_Button"]') is not None
+
+            if not is_logged_in:
+                print("DEBUG: Not logged in, navigating to login page...")
+                page.goto("https://x.com/login", timeout=60000)
+                page.wait_for_timeout(3000)
+
+                # Try multiple selector strategies for username field
+                try:
+                    print("DEBUG: Looking for username field...")
+                    # Wait for page to stabilize
+                    page.wait_for_load_state("domcontentloaded", timeout=30000)
+
+                    # Try multiple selectors
+                    username_selectors = [
+                        'input[autocomplete="username"]',
+                        'input[name="text"]',
+                        'input[type="text"]',
+                        '[data-testid="ocfEnterTextTextInput"]'
+                    ]
+
+                    username_box = None
+                    for selector in username_selectors:
+                        print(f"DEBUG: Trying selector: {selector}")
+                        try:
+                            page.wait_for_selector(selector, timeout=5000, state="visible")
+                            username_box = page.query_selector(selector)
+                            if username_box:
+                                print(f"DEBUG: Found username field with selector: {selector}")
+                                break
+                        except:
+                            continue
+
+                    if not username_box:
+                        return False, "X login: username field not found with any selector. Page may have changed."
+
+                    username_box.fill(username)
+                    page.wait_for_timeout(1000)
+                    username_box.press("Enter")
+                    print("DEBUG: Username entered, waiting for next screen...")
+
+                    # Check if X is asking for phone/email verification instead of password
+                    page.wait_for_timeout(3000)
+
+                    # Look for verification text fields (phone number or email)
+                    verification_field = page.query_selector('input[data-testid="ocfEnterTextTextInput"]')
+                    if verification_field:
+                        print("DEBUG: X is requesting additional verification (phone/email). This automation cannot handle this.")
+                        return False, "X login: Additional verification required. Please log into X manually in a browser first to verify your identity, then try again."
+                except Exception as e:
+                    return False, f"X login: username field error: {e}"
+
+                # Password field - may need to wait longer or handle verification
+                try:
+                    print("DEBUG: Waiting for password field...")
+                    page.wait_for_timeout(2000)  # Give the page time to transition
+
+                    # Try multiple selectors for password
+                    password_selectors = [
+                        'input[name="password"]',
+                        'input[type="password"]',
+                        'input[autocomplete="current-password"]'
+                    ]
+
+                    password_box = None
+                    for selector in password_selectors:
+                        print(f"DEBUG: Trying password selector: {selector}")
+                        try:
+                            page.wait_for_selector(selector, timeout=10000, state="visible")
+                            password_box = page.query_selector(selector)
+                            if password_box:
+                                print(f"DEBUG: Found password field with selector: {selector}")
+                                break
+                        except:
+                            continue
+
+                    if not password_box:
+                        # Check if we hit a verification screen (phone/email verification)
+                        page_content = page.content()
+                        if "verif" in page_content.lower() or "unusual" in page_content.lower():
+                            return False, "X login: Account verification required. Please log in manually via browser first to verify your account."
+
+                        # Save screenshot for debugging
+                        try:
+                            screenshot_path = os.path.join(BASE_DIR, "debug_x_login.png")
+                            page.screenshot(path=screenshot_path)
+                            print(f"DEBUG: Saved screenshot to {screenshot_path}")
+                        except:
+                            pass
+
+                        return False, "X login: password field not found. X may have changed their login flow or account needs verification."
+
+                    password_box.fill(password)
+                    page.wait_for_timeout(1000)
+                    password_box.press("Enter")
+                    print("DEBUG: Password entered, waiting for home page...")
+                except Exception as e:
+                    return False, f"X login: password field error: {e}"
+
+                # Wait for successful login
+                try:
+                    page.wait_for_url("https://x.com/home", timeout=60000)
+                    print("DEBUG: Successfully logged in to X")
+                except Exception:
+                    print("DEBUG: Didn't reach home URL, checking for home page elements...")
+                    page.wait_for_load_state("networkidle", timeout=60000)
+                    # Check if we're actually logged in by looking for post button
+                    if not page.query_selector('a[data-testid="SideNav_NewPost_Button"]'):
+                        return False, "X login: Could not verify successful login. Check credentials or account status."
+            else:
+                print("DEBUG: Already logged in! Using existing session.")
+
+            # Find and click post button
             try:
-                page.wait_for_selector('input[name="text"], input[autocomplete="username"]', timeout=30000)
-                username_box = page.query_selector('input[name="text"]') or page.query_selector('input[autocomplete="username"]')
-                username_box.fill(username)
-                username_box.press("Enter")
-            except Exception as e:
-                return False, f"X login: username field error: {e}"
+                print("DEBUG: Looking for post composer...")
+                page.wait_for_timeout(2000)
 
-            try:
-                page.wait_for_selector('input[name="password"]', timeout=30000)
-                page.fill('input[name="password"]', password)
-                page.press('input[name="password"]', "Enter")
-            except Exception as e:
-                return False, f"X login: password field error: {e}"
-
-            try:
-                page.wait_for_url("https://x.com/home", timeout=60000)
-            except Exception:
-                page.wait_for_load_state("networkidle", timeout=60000)
-
-            try:
-                post_button = page.query_selector('a[aria-label="Post"], a[data-testid="SideNav_NewPost_Button"]')
+                post_button = page.query_selector('a[data-testid="SideNav_NewPost_Button"]')
                 if post_button:
                     post_button.click()
+                    page.wait_for_timeout(2000)
                 else:
-                    composer = page.query_selector('div[aria-label="Post text"], div[data-testid="tweetTextarea_0"]')
+                    # Try clicking directly on composer
+                    composer = page.query_selector('div[data-testid="tweetTextarea_0"]')
                     if composer:
                         composer.click()
-                page.wait_for_timeout(1000)
+                        page.wait_for_timeout(1000)
+                    else:
+                        return False, "X: Could not find post button or composer"
+
+                print("DEBUG: Composer opened")
             except Exception as e:
                 return False, f"X: could not open composer: {e}"
 
+            # Fill in post text
             try:
-                textarea = page.query_selector('div[aria-label="Post text"]') or page.query_selector(
-                    'div[data-testid="tweetTextarea_0"]'
-                )
+                print("DEBUG: Filling in post text...")
+                textarea = page.query_selector('div[data-testid="tweetTextarea_0"]')
                 if not textarea:
                     return False, "X: composer textarea not found."
                 textarea.fill(text)
+                page.wait_for_timeout(1000)
+                print("DEBUG: Text filled")
             except Exception as e:
                 return False, f"X: error filling text: {e}"
 
+            # Attach image if provided
             if image_path and os.path.exists(image_path):
                 try:
-                    file_input = page.query_selector('input[type="file"]')
+                    print("DEBUG: Attaching image...")
+                    file_input = page.query_selector('input[data-testid="fileInput"]')
+                    if not file_input:
+                        file_input = page.query_selector('input[type="file"]')
                     if file_input:
                         file_input.set_input_files(image_path)
-                        page.wait_for_timeout(4000)
+                        page.wait_for_timeout(5000)  # Wait for upload
+                        print("DEBUG: Image attached")
                 except Exception as e:
                     return False, f"X: error attaching image: {e}"
 
+            # Click post button
             try:
-                btn = (
-                    page.query_selector('div[data-testid="tweetButtonInline"]')
-                    or page.query_selector('div[data-testid="tweetButton"]')
-                    or page.query_selector('button[data-testid="tweetButtonInline"]')
-                )
+                print("DEBUG: Clicking post button...")
+                btn = page.query_selector('button[data-testid="tweetButtonInline"]')
+                if not btn:
+                    btn = page.query_selector('button[data-testid="tweetButton"]')
                 if not btn:
                     return False, "X: tweet button not found."
+
                 btn.click()
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(5000)  # Wait for post to complete
+                print("DEBUG: Post button clicked, post should be live")
             except Exception as e:
                 return False, f"X: error clicking tweet button: {e}"
 
             return True, "Posted to X"
     except Exception as e:
         return False, f"X Playwright error: {e}"
+    finally:
+        # Close context (persistent context doesn't need browser.close())
+        try:
+            if context:
+                context.close()
+        except Exception:
+            pass
+
+
+def post_to_reddit(text, image_path=None):
+    return False, "Reddit posting not implemented yet."
+
+
+def post_to_facebook(text, image_path=None):
+    """Log in to Facebook via Playwright and create a post."""
+    config = load_config()
+    email = config.get('facebook_email', '')
+    password = config.get('facebook_password', '')
+    target_url = config.get('facebook_url', '')
+
+    # Try 1Password if credentials not in config
+    if (not email or not password) and OnePasswordHelper.is_available():
+        print("DEBUG: Attempting to fetch Facebook credentials from 1Password...")
+        op_email, op_password = OnePasswordHelper.get_credentials_for_platform('Facebook')
+        if op_email and op_password:
+            email = op_email
+            password = op_password
+            print("DEBUG: Successfully retrieved Facebook credentials from 1Password")
+
+    if not email or not password:
+        return False, "Facebook credentials not configured. Please set them in Settings or 1Password."
+
+    browser = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+
+            # Navigate to Facebook login
+            page.goto("https://www.facebook.com/login", timeout=60000)
+
+            try:
+                # Fill login form
+                page.wait_for_selector('#email', timeout=15000)
+                page.fill('#email', email)
+                page.fill('#pass', password)
+                page.click('button[name="login"]')
+            except Exception as e:
+                return False, f"Facebook login form error: {e}"
+
+            # Wait for redirect
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass
+
+            # Check for login errors or security challenges
+            if "checkpoint" in page.url or "login" in page.url:
+                # Check if it's a 2FA or security check
+                if page.query_selector('input[name="approvals_code"]'):
+                    return False, "Facebook 2FA required. Please log in manually first."
+                if "login" in page.url:
+                    return False, "Facebook login failed. Check credentials."
+
+            # Navigate to target (page, group, or personal feed)
+            if target_url:
+                page.goto(target_url, timeout=30000)
+                page.wait_for_load_state("networkidle", timeout=15000)
+
+            # Click on "What's on your mind?" or similar to open composer
+            try:
+                composer_triggers = [
+                    '[aria-label*="What\'s on your mind"]',
+                    '[aria-label*="Create a post"]',
+                    'div[role="button"]:has-text("What\'s on your mind")',
+                    'span:has-text("What\'s on your mind")',
+                    '[data-pagelet="FeedComposer"] div[role="button"]'
+                ]
+
+                clicked = False
+                for selector in composer_triggers:
+                    try:
+                        btn = page.query_selector(selector)
+                        if btn:
+                            btn.click()
+                            clicked = True
+                            break
+                    except:
+                        continue
+
+                if not clicked:
+                    # Try clicking anywhere that might open the composer
+                    page.click('text="What\'s on your mind"', timeout=5000)
+
+                page.wait_for_timeout(2000)
+            except Exception as e:
+                return False, f"Facebook: could not open post composer: {e}"
+
+            # Wait for and fill the post editor
+            try:
+                editor_selectors = [
+                    'div[contenteditable="true"][role="textbox"]',
+                    'div[aria-label*="What\'s on your mind"][contenteditable="true"]',
+                    'div[data-lexical-editor="true"]',
+                    'form div[contenteditable="true"]'
+                ]
+
+                editor = None
+                for selector in editor_selectors:
+                    try:
+                        page.wait_for_selector(selector, timeout=5000)
+                        editor = page.query_selector(selector)
+                        if editor:
+                            break
+                    except:
+                        continue
+
+                if not editor:
+                    return False, "Facebook: post editor not found."
+
+                # Click and type into editor
+                editor.click()
+                page.wait_for_timeout(500)
+                page.keyboard.type(text, delay=15)
+                page.wait_for_timeout(1000)
+            except Exception as e:
+                return False, f"Facebook: error filling text: {e}"
+
+            # Upload image if provided
+            if image_path and os.path.exists(image_path):
+                try:
+                    # Click the photo/video button
+                    photo_btn_selectors = [
+                        '[aria-label*="Photo/video"]',
+                        '[aria-label*="Add Photos"]',
+                        'div[role="button"]:has-text("Photo/video")',
+                        'input[type="file"][accept*="image"]'
+                    ]
+
+                    # Try to find and click photo button
+                    for selector in photo_btn_selectors:
+                        try:
+                            btn = page.query_selector(selector)
+                            if btn:
+                                if selector.startswith('input'):
+                                    # Direct file input
+                                    btn.set_input_files(image_path)
+                                else:
+                                    btn.click()
+                                break
+                        except:
+                            continue
+
+                    page.wait_for_timeout(1000)
+
+                    # Find file input and upload
+                    file_input = page.query_selector('input[type="file"][accept*="image"]')
+                    if file_input:
+                        file_input.set_input_files(image_path)
+                        page.wait_for_timeout(5000)  # Wait for upload
+                except Exception as e:
+                    print(f"Facebook: Image upload warning (continuing): {e}")
+
+            # Click Post button
+            try:
+                post_btn_selectors = [
+                    '[aria-label="Post"]',
+                    'div[role="button"]:has-text("Post")',
+                    'span:has-text("Post")',
+                    'form button[type="submit"]'
+                ]
+
+                for selector in post_btn_selectors:
+                    try:
+                        btns = page.query_selector_all(selector)
+                        for btn in btns:
+                            # Make sure it's the actual post button, not a menu item
+                            if btn.is_visible() and btn.is_enabled():
+                                btn.click()
+                                break
+                        break
+                    except:
+                        continue
+
+                page.wait_for_timeout(5000)
+            except Exception as e:
+                return False, f"Facebook: error clicking post button: {e}"
+
+            return True, "Posted to Facebook"
+    except Exception as e:
+        return False, f"Facebook Playwright error: {e}"
     finally:
         if browser is not None:
             try:
@@ -521,16 +1142,206 @@ def post_to_x(text, image_path=None):
                 pass
 
 
-def post_to_reddit(text, image_path=None):
-    return False, "Reddit posting not implemented yet."
-
-
-def post_to_facebook(text, image_path=None):
-    return False, "Facebook posting not implemented yet."
-
-
 def post_to_linkedin(text, image_path=None):
-    return False, "LinkedIn posting not implemented yet."
+    """Log in to LinkedIn via Playwright and create a post."""
+    config = load_config()
+    email = config.get('linkedin_email', '')
+    password = config.get('linkedin_password', '')
+
+    # Try 1Password if credentials not in config
+    if (not email or not password) and OnePasswordHelper.is_available():
+        print("DEBUG: Attempting to fetch LinkedIn credentials from 1Password...")
+        op_email, op_password = OnePasswordHelper.get_credentials_for_platform('LinkedIn')
+        if op_email and op_password:
+            email = op_email
+            password = op_password
+            print("DEBUG: Successfully retrieved LinkedIn credentials from 1Password")
+
+    if not email or not password:
+        return False, "LinkedIn credentials not configured. Please set them in Settings or 1Password."
+
+    browser = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)  # Visible for debugging
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+            print("DEBUG: LinkedIn - Browser launched")
+
+            # Navigate to LinkedIn login
+            print("DEBUG: LinkedIn - Navigating to login page")
+            page.goto("https://www.linkedin.com/login", timeout=60000)
+            page.wait_for_timeout(2000)
+
+            try:
+                # Fill login form
+                print("DEBUG: LinkedIn - Looking for login form")
+                page.wait_for_selector('#username', timeout=15000)
+                print("DEBUG: LinkedIn - Filling credentials")
+                page.fill('#username', email)
+                page.fill('#password', password)
+                page.wait_for_timeout(500)
+                print("DEBUG: LinkedIn - Clicking submit")
+                page.click('button[type="submit"]')
+            except Exception as e:
+                return False, f"LinkedIn login form error: {e}"
+
+            # Wait for redirect to feed
+            try:
+                print("DEBUG: LinkedIn - Waiting for feed page")
+                page.wait_for_url("**/feed/**", timeout=30000)
+                print("DEBUG: LinkedIn - Successfully logged in")
+            except Exception:
+                # Check if we're on a security challenge page
+                print(f"DEBUG: LinkedIn - Current URL: {page.url}")
+                if "checkpoint" in page.url or "challenge" in page.url:
+                    return False, "LinkedIn security challenge detected. Please log in manually first to verify your device."
+                page.wait_for_load_state("networkidle", timeout=30000)
+
+            # Click "Start a post" button
+            try:
+                print("DEBUG: LinkedIn - Looking for 'Start a post' button")
+                page.wait_for_timeout(2000)  # Give page time to load
+
+                # LinkedIn's post button - try multiple selectors
+                start_post_selectors = [
+                    'button.share-box-feed-entry__trigger',
+                    'button[aria-label*="Start a post"]',
+                    '.share-box-feed-entry__trigger',
+                    'div.share-box-feed-entry__top-bar button',
+                    'button[data-control-name="share_to_linkedin"]'
+                ]
+
+                clicked = False
+                for selector in start_post_selectors:
+                    print(f"DEBUG: LinkedIn - Trying start post selector: {selector}")
+                    try:
+                        btn = page.query_selector(selector)
+                        if btn and btn.is_visible():
+                            print(f"DEBUG: LinkedIn - Found and clicking: {selector}")
+                            btn.click()
+                            clicked = True
+                            break
+                    except Exception as e:
+                        print(f"DEBUG: LinkedIn - Selector failed: {selector} - {e}")
+                        continue
+
+                if not clicked:
+                    # Try clicking on the "Start a post" text area directly
+                    print("DEBUG: LinkedIn - Trying text selector")
+                    page.click('text="Start a post"', timeout=5000)
+                    clicked = True
+
+                if clicked:
+                    print("DEBUG: LinkedIn - Composer should be opening...")
+                    page.wait_for_timeout(3000)
+                else:
+                    return False, "LinkedIn: Could not find 'Start a post' button"
+            except Exception as e:
+                print(f"DEBUG: LinkedIn - Composer open error: {e}")
+                return False, f"LinkedIn: could not open post composer: {e}"
+
+            # Wait for and fill the post editor
+            try:
+                print("DEBUG: LinkedIn - Looking for post editor")
+                editor_selectors = [
+                    'div.ql-editor[data-placeholder="What do you want to talk about?"]',
+                    'div.ql-editor',
+                    'div[role="textbox"][aria-label*="Text editor"]',
+                    'div[contenteditable="true"]'
+                ]
+
+                editor = None
+                for selector in editor_selectors:
+                    print(f"DEBUG: LinkedIn - Trying editor selector: {selector}")
+                    try:
+                        page.wait_for_selector(selector, timeout=5000)
+                        editor = page.query_selector(selector)
+                        if editor:
+                            print(f"DEBUG: LinkedIn - Found editor: {selector}")
+                            break
+                    except Exception as e:
+                        print(f"DEBUG: LinkedIn - Editor selector failed: {selector} - {e}")
+                        continue
+
+                if not editor:
+                    return False, "LinkedIn: post editor not found."
+
+                # Click and type into editor
+                print("DEBUG: LinkedIn - Typing post text")
+                editor.click()
+                page.wait_for_timeout(500)
+                page.keyboard.type(text, delay=10)
+                page.wait_for_timeout(1000)
+                print("DEBUG: LinkedIn - Text entered successfully")
+            except Exception as e:
+                print(f"DEBUG: LinkedIn - Text fill error: {e}")
+                return False, f"LinkedIn: error filling text: {e}"
+
+            # Upload image if provided
+            if image_path and os.path.exists(image_path):
+                try:
+                    # Click the image/media button
+                    media_btn_selectors = [
+                        'button[aria-label*="Add a photo"]',
+                        'button[aria-label*="Add media"]',
+                        'button.image-sharing-detour-button',
+                        'li.image-sharing-detour-button button'
+                    ]
+
+                    for selector in media_btn_selectors:
+                        try:
+                            btn = page.query_selector(selector)
+                            if btn:
+                                btn.click()
+                                break
+                        except:
+                            continue
+
+                    page.wait_for_timeout(1000)
+
+                    # Find file input and upload
+                    file_input = page.query_selector('input[type="file"]')
+                    if file_input:
+                        file_input.set_input_files(image_path)
+                        page.wait_for_timeout(5000)  # Wait for upload
+                except Exception as e:
+                    print(f"LinkedIn: Image upload warning (continuing): {e}")
+
+            # Click Post button
+            try:
+                post_btn_selectors = [
+                    'button.share-actions__primary-action',
+                    'button[aria-label="Post"]',
+                    'button:has-text("Post")',
+                    'button.artdeco-button--primary:has-text("Post")'
+                ]
+
+                for selector in post_btn_selectors:
+                    try:
+                        btn = page.query_selector(selector)
+                        if btn and btn.is_enabled():
+                            btn.click()
+                            break
+                    except:
+                        continue
+
+                page.wait_for_timeout(5000)
+            except Exception as e:
+                return False, f"LinkedIn: error clicking post button: {e}"
+
+            return True, "Posted to LinkedIn"
+    except Exception as e:
+        return False, f"LinkedIn Playwright error: {e}"
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 def post_to_threads(text, image_path=None):
@@ -547,6 +1358,165 @@ def post_to_tiktok(text, image_path=None):
 
 def post_to_quora(text, image_path=None):
     return False, "Quora posting not implemented yet."
+
+
+# --------------------------------------------------------------------
+# HISTORY DIALOG
+# --------------------------------------------------------------------
+
+class HistoryDialog(QDialog):
+    """Dialog showing post history with performance tracking."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Post History")
+        self.setMinimumWidth(900)
+        self.setMinimumHeight(600)
+
+        layout = QVBoxLayout(self)
+
+        # Header
+        header = QLabel("📊 Post History - Track Your Content Performance")
+        header.setStyleSheet("font-size: 14px; font-weight: bold; color: #4CAF50; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        info = QLabel("Review past posts and track engagement. Click any post to add performance notes.")
+        info.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 10px;")
+        layout.addWidget(info)
+
+        # Scroll area for history
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setSpacing(10)
+
+        # Load history
+        history = load_post_history()
+
+        if not history:
+            empty_label = QLabel("No posts in history yet. Posts will appear here after they're published.")
+            empty_label.setStyleSheet("color: #999; font-style: italic; padding: 40px;")
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            scroll_layout.addWidget(empty_label)
+        else:
+            for entry in history:
+                card = self.create_history_card(entry)
+                scroll_layout.addWidget(card)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def create_history_card(self, entry):
+        """Create a card widget for a history entry."""
+        card = QFrame()
+        card.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
+        card.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                padding: 10px;
+            }
+        """)
+
+        card_layout = QHBoxLayout(card)
+
+        # Left: Post info
+        info_layout = QVBoxLayout()
+
+        # Date/time
+        posted_at = entry.get('posted_at', '')
+        if posted_at:
+            try:
+                dt = datetime.fromisoformat(posted_at)
+                time_label = QLabel(dt.strftime("%b %d, %Y at %I:%M %p"))
+                time_label.setStyleSheet("font-weight: bold; color: #4CAF50; font-size: 12px;")
+                info_layout.addWidget(time_label)
+            except:
+                pass
+
+        # Caption preview
+        caption = entry.get('caption', '')[:120]
+        if len(entry.get('caption', '')) > 120:
+            caption += '...'
+        caption_label = QLabel(caption or "(No caption)")
+        caption_label.setWordWrap(True)
+        caption_label.setStyleSheet("font-size: 12px; color: #333; margin: 5px 0;")
+        info_layout.addWidget(caption_label)
+
+        # Platforms
+        platforms = entry.get('platforms', [])
+        if platforms:
+            plat_row = QHBoxLayout()
+            plat_label = QLabel("Platforms:")
+            plat_label.setStyleSheet("font-size: 10px; color: #666;")
+            plat_row.addWidget(plat_label)
+
+            for platform in platforms:
+                color = PLATFORM_COLORS.get(platform, '#333333')
+                dot = QLabel()
+                dot.setFixedSize(12, 12)
+                dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
+                dot.setToolTip(platform)
+                plat_row.addWidget(dot)
+
+            plat_row.addStretch()
+            info_layout.addLayout(plat_row)
+
+        # Results
+        results = entry.get('result', {})
+        if results:
+            results_text = " | ".join([f"{p}: {'✓' if 'success' in v.lower() else '✗'}" for p, v in results.items()])
+            results_label = QLabel(results_text)
+            results_label.setStyleSheet("font-size: 10px; color: #666; margin-top: 5px;")
+            info_layout.addWidget(results_label)
+
+        card_layout.addLayout(info_layout, stretch=3)
+
+        # Right: Performance notes (editable)
+        notes_layout = QVBoxLayout()
+
+        notes_label = QLabel("Performance Notes:")
+        notes_label.setStyleSheet("font-size: 10px; color: #666; font-weight: bold;")
+        notes_layout.addWidget(notes_label)
+
+        notes_edit = QTextEdit()
+        notes_edit.setPlaceholderText("Add notes about engagement, what worked, etc...")
+        notes_edit.setText(entry.get('notes', ''))
+        notes_edit.setMaximumHeight(80)
+        notes_edit.setStyleSheet("""
+            QTextEdit {
+                font-size: 10px;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                padding: 4px;
+            }
+        """)
+
+        # Save notes on text change
+        def save_notes():
+            history = load_post_history()
+            for i, h in enumerate(history):
+                if h.get('id') == entry.get('id'):
+                    history[i]['notes'] = notes_edit.toPlainText()
+                    save_post_history(history)
+                    break
+
+        notes_edit.textChanged.connect(save_notes)
+        notes_layout.addWidget(notes_edit)
+
+        card_layout.addLayout(notes_layout, stretch=2)
+
+        return card
 
 
 # --------------------------------------------------------------------
@@ -567,6 +1537,93 @@ class SettingsDialog(QDialog):
         # Tab widget
         tabs = QTabWidget()
         layout.addWidget(tabs)
+
+        # General Tab (Mode Toggle)
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
+
+        mode_group = QGroupBox("Posting Mode")
+        mode_layout = QVBoxLayout(mode_group)
+
+        # Mode selector with clear warning
+        self.dry_run_radio = QPushButton("🧪 TEST MODE (Dry Run)")
+        self.dry_run_radio.setCheckable(True)
+        self.dry_run_radio.setStyleSheet("""
+            QPushButton {
+                background-color: #FF8C00;
+                color: white;
+                font-weight: bold;
+                padding: 15px;
+                border-radius: 8px;
+                text-align: left;
+                font-size: 14px;
+            }
+            QPushButton:checked {
+                background-color: #2E7D32;
+                border: 3px solid #1B5E20;
+            }
+        """)
+        mode_layout.addWidget(self.dry_run_radio)
+
+        dry_run_info = QLabel("✓ Safe for testing\n✓ No posts will be published\n✓ Actions are only logged")
+        dry_run_info.setStyleSheet("color: #666; margin-left: 20px; margin-bottom: 10px; font-size: 12px;")
+        mode_layout.addWidget(dry_run_info)
+
+        self.live_mode_radio = QPushButton("🚀 LIVE MODE (Real Posting)")
+        self.live_mode_radio.setCheckable(True)
+        self.live_mode_radio.setStyleSheet("""
+            QPushButton {
+                background-color: #666;
+                color: white;
+                font-weight: bold;
+                padding: 15px;
+                border-radius: 8px;
+                text-align: left;
+                font-size: 14px;
+            }
+            QPushButton:checked {
+                background-color: #D32F2F;
+                border: 3px solid #B71C1C;
+            }
+        """)
+        mode_layout.addWidget(self.live_mode_radio)
+
+        live_info = QLabel("⚠️ Posts WILL be published to platforms\n⚠️ Actions CANNOT be undone\n⚠️ Use with caution!")
+        live_info.setStyleSheet("color: #D32F2F; margin-left: 20px; font-weight: bold; font-size: 12px;")
+        mode_layout.addWidget(live_info)
+
+        # Make radio buttons mutually exclusive
+        self.dry_run_radio.clicked.connect(lambda: self.set_mode_selection(True))
+        self.live_mode_radio.clicked.connect(lambda: self.set_mode_selection(False))
+
+        mode_layout.addStretch()
+        general_layout.addWidget(mode_group)
+
+        # 1Password Integration Status
+        onepass_group = QGroupBox("🔐 1Password Integration")
+        onepass_layout = QVBoxLayout(onepass_group)
+
+        self.onepass_status_label = QLabel()
+        self.update_1password_status()
+        onepass_layout.addWidget(self.onepass_status_label)
+
+        onepass_info = QLabel(
+            "When 1Password CLI is available, credentials will be automatically\n"
+            "retrieved from your vault. Item names should match platform names\n"
+            "(e.g., 'X (Twitter)', 'LinkedIn', 'Facebook')."
+        )
+        onepass_info.setStyleSheet("color: #666; font-size: 11px; margin-top: 5px;")
+        onepass_info.setWordWrap(True)
+        onepass_layout.addWidget(onepass_info)
+
+        test_1pass_btn = QPushButton("Test 1Password Connection")
+        test_1pass_btn.clicked.connect(self.test_1password_connection)
+        onepass_layout.addWidget(test_1pass_btn)
+
+        general_layout.addWidget(onepass_group)
+        general_layout.addStretch()
+
+        tabs.addTab(general_tab, "⚙️ General")
 
         # AI Tab
         ai_tab = QWidget()
@@ -802,6 +1859,10 @@ class SettingsDialog(QDialog):
         """Load all settings from config."""
         config = load_config()
 
+        # Mode (default to dry_run=True for safety)
+        dry_run = config.get('dry_run', True)
+        self.set_mode_selection(dry_run)
+
         # AI Provider
         provider = config.get('primary_provider', 'Anthropic')
         index = self.primary_provider.findText(provider)
@@ -869,6 +1930,7 @@ class SettingsDialog(QDialog):
                 best_times[platform] = times
 
         return {
+            'dry_run': self.dry_run_radio.isChecked(),
             'primary_provider': self.primary_provider.currentText(),
             'anthropic_key': self.anthropic_key.text().strip(),
             'openai_key': self.openai_key.text().strip(),
@@ -893,6 +1955,66 @@ class SettingsDialog(QDialog):
             'quora_password': self.quora_password.text(),
             'best_times': best_times,
         }
+
+    def set_mode_selection(self, dry_run):
+        """Set mode selection (mutually exclusive buttons)."""
+        self.dry_run_radio.setChecked(dry_run)
+        self.live_mode_radio.setChecked(not dry_run)
+
+    def update_1password_status(self):
+        """Update the 1Password status label."""
+        if OnePasswordHelper.is_available():
+            self.onepass_status_label.setText("✅ 1Password CLI is available and ready")
+            self.onepass_status_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.onepass_status_label.setText("❌ 1Password CLI not available or not signed in")
+            self.onepass_status_label.setStyleSheet("color: orange; font-weight: bold;")
+
+    def test_1password_connection(self):
+        """Test 1Password connection by attempting to retrieve X credentials."""
+        if not OnePasswordHelper.is_available():
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("1Password Not Available")
+            msg.setText("1Password CLI is installed but not connected to your desktop app.")
+            msg.setInformativeText(
+                "To enable 1Password integration:\n\n"
+                "1. Open 1Password desktop app (not the website)\n"
+                "2. Go to Settings → Developer tab\n"
+                "3. Enable 'Connect with 1Password CLI'\n"
+                "4. Restart Social Rocket\n\n"
+                "This allows Social Rocket to securely access\n"
+                "your credentials using biometric unlock."
+            )
+            open_btn = msg.addButton("Open 1Password Settings", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+            if msg.clickedButton() == open_btn:
+                # Open 1Password app settings
+                subprocess.run(['open', '-a', '1Password', '--args', '--settings'])
+            return
+
+        # Test by trying to get X credentials
+        username, password = OnePasswordHelper.get_credentials_for_platform('X')
+
+        if username and password:
+            QMessageBox.information(
+                self,
+                "1Password Test Successful",
+                f"✅ Successfully retrieved X (Twitter) credentials!\n\n"
+                f"Username: {username[:3]}{'*' * (len(username) - 3)}\n"
+                f"Password: {'*' * len(password)}\n\n"
+                f"1Password integration is working correctly."
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "1Password Test Failed",
+                "Could not retrieve X (Twitter) credentials from 1Password.\n\n"
+                "Make sure you have an item named 'X (Twitter)' in your vault\n"
+                "with 'username' and 'password' fields populated."
+            )
 
     def toggle_key_visibility(self):
         if self.anthropic_key.echoMode() == QLineEdit.EchoMode.Password:
@@ -1570,6 +2692,11 @@ class SocialRocket(QMainWindow):
 
         self._build_ui()
 
+    def is_dry_run(self):
+        """Check if dry run mode is enabled from config."""
+        config = load_config()
+        return config.get('dry_run', True)  # Default to True for safety
+
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -1618,7 +2745,23 @@ class SocialRocket(QMainWindow):
 
         top_bar.addStretch()
 
-        settings_btn = QPushButton("Settings")
+        history_btn = QPushButton("📊 History")
+        history_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        history_btn.clicked.connect(self.open_history)
+        top_bar.addWidget(history_btn)
+
+        settings_btn = QPushButton("⚙️ Settings")
         settings_btn.clicked.connect(self.open_settings)
         top_bar.addWidget(settings_btn)
 
@@ -1747,8 +2890,101 @@ class SocialRocket(QMainWindow):
         fields_layout = QVBoxLayout()
         fields_layout.setSpacing(8)
 
+        # Project Selector Row
+        project_row = QHBoxLayout()
+        project_label = QLabel("Project:")
+        project_label.setStyleSheet("color: #E0E0E0; font-weight: bold; font-size: 11px;")
+        project_row.addWidget(project_label)
+
+        self.project_selector = QComboBox()
+        self.project_selector.setStyleSheet("""
+            QComboBox {
+                background-color: #505050;
+                color: white;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-width: 150px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid white;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #505050;
+                color: white;
+                selection-background-color: #667eea;
+            }
+        """)
+        self.project_selector.currentIndexChanged.connect(self.on_project_changed)
+        project_row.addWidget(self.project_selector)
+
+        # Industry/Sub-Industry Display
+        self.industry_label = QLabel("")
+        self.industry_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic; margin-left: 10px;")
+        project_row.addWidget(self.industry_label)
+
+        project_row.addStretch()
+        fields_layout.addLayout(project_row)
+
+        # Content Type Selector Row
+        content_type_row = QHBoxLayout()
+        content_type_label = QLabel("Content Type:")
+        content_type_label.setStyleSheet("color: #E0E0E0; font-weight: bold; font-size: 11px;")
+        content_type_row.addWidget(content_type_label)
+
+        self.content_type_selector = QComboBox()
+        self.content_type_selector.setStyleSheet("""
+            QComboBox {
+                background-color: #505050;
+                color: white;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-width: 180px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid white;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #505050;
+                color: white;
+                selection-background-color: #667eea;
+            }
+        """)
+        self.content_type_selector.currentIndexChanged.connect(self.on_content_type_changed)
+        content_type_row.addWidget(self.content_type_selector)
+        content_type_row.addStretch()
+        fields_layout.addLayout(content_type_row)
+
+        # Load projects and populate selectors
+        self.projects = load_projects()
+        if not self.projects:
+            self.projects = create_default_projects()
+            save_projects(self.projects)
+
+        for project in self.projects:
+            self.project_selector.addItem(project['name'], project['id'])
+
+        # Initialize content types for first project
+        if self.projects:
+            self.populate_content_types()
+
         # Info label
-        info_label = QLabel("Select a file to auto-generate content with AI")
+        info_label = QLabel("Select content type above, then AI will generate optimized content")
         info_label.setStyleSheet("color: #B0B0B0; font-size: 10px; font-style: italic;")
         fields_layout.addWidget(info_label)
 
@@ -1931,6 +3167,7 @@ class SocialRocket(QMainWindow):
         calendar_container.addWidget(QLabel("Content Calendar"))
 
         self.calendar = ContentCalendar()
+        self.calendar.setMinimumHeight(350)  # Taller calendar for better visibility
         self.calendar.date_selected_for_view.connect(self.show_day_posts)
         calendar_container.addWidget(self.calendar)
 
@@ -1946,7 +3183,7 @@ class SocialRocket(QMainWindow):
         # Scrollable queue area
         queue_scroll = QScrollArea()
         queue_scroll.setWidgetResizable(True)
-        queue_scroll.setMinimumHeight(200)
+        queue_scroll.setMinimumHeight(350)  # Match calendar height for better layout
         queue_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         queue_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
@@ -1973,9 +3210,10 @@ class SocialRocket(QMainWindow):
 
         sched_row.addStretch()
 
-        mode_label = QLabel(f"Mode: {'DRY-RUN' if DRY_RUN else 'LIVE'}")
-        mode_label.setStyleSheet(f"color: {'orange' if DRY_RUN else 'green'}; font-weight: bold;")
-        sched_row.addWidget(mode_label)
+        # Dynamic mode label that updates based on config
+        self.mode_label = QLabel()
+        self.update_mode_label()
+        sched_row.addWidget(self.mode_label)
 
         main_layout.addLayout(sched_row)
 
@@ -1995,7 +3233,7 @@ class SocialRocket(QMainWindow):
 
         self.refresh_queue_display()
         self.refresh_gallery()  # Load creative library thumbnails
-        mode = "DRY-RUN (no real posts)" if DRY_RUN else "LIVE (will post to platforms)"
+        mode = "DRY-RUN (no real posts)" if self.is_dry_run() else "LIVE (will post to platforms)"
         self.append_log(f"App started. Mode: {mode}")
 
         # Timer to refresh queue
@@ -2007,11 +3245,25 @@ class SocialRocket(QMainWindow):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.log.appendPlainText(f"[{ts}] {msg}")
 
+    def update_mode_label(self):
+        """Update the mode label based on current config."""
+        dry_run = self.is_dry_run()
+        mode_text = 'DRY-RUN' if dry_run else 'LIVE'
+        mode_color = 'orange' if dry_run else 'red'
+        self.mode_label.setText(f"Mode: {mode_text}")
+        self.mode_label.setStyleSheet(f"color: {mode_color}; font-weight: bold; font-size: 13px;")
+
+    def open_history(self):
+        """Open the post history dialog."""
+        dialog = HistoryDialog(self)
+        dialog.exec()
+
     def open_settings(self):
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             settings = dialog.get_settings()
             save_config(settings)
+            self.update_mode_label()  # Refresh mode label after settings change
             self.append_log("Settings saved.")
 
     def load_creative_library(self):
@@ -2237,6 +3489,88 @@ class SocialRocket(QMainWindow):
         # Auto-generate content
         self.generate_ai_content()
 
+    def on_project_changed(self):
+        """Handle project selection change."""
+        self.populate_content_types()
+        self.update_industry_label()
+
+    def populate_content_types(self):
+        """Populate content type selector based on selected project."""
+        self.content_type_selector.clear()
+
+        project_id = self.project_selector.currentData()
+        if not project_id:
+            return
+
+        # Find the selected project
+        project = next((p for p in self.projects if p['id'] == project_id), None)
+        if not project:
+            return
+
+        # Add content types from project
+        content_types = project.get('content_types', {})
+        for key, content_type in content_types.items():
+            self.content_type_selector.addItem(content_type['name'], key)
+
+    def update_industry_label(self):
+        """Update the industry/sub-industry display label."""
+        project_id = self.project_selector.currentData()
+        if not project_id:
+            self.industry_label.setText("")
+            return
+
+        project = next((p for p in self.projects if p['id'] == project_id), None)
+        if project:
+            industry = project.get('industry', '')
+            sub_industry = project.get('sub_industry', '')
+            self.industry_label.setText(f"{industry} > {sub_industry}")
+        else:
+            self.industry_label.setText("")
+
+    def on_content_type_changed(self):
+        """Handle content type selection change."""
+        # Ignore early signal emissions before the UI is fully built
+        if not hasattr(self, "caption_prompt"):
+            return
+
+        # Get selected project and content type
+        project_id = self.project_selector.currentData()
+        content_type_key = self.content_type_selector.currentData()
+
+        if not project_id or not content_type_key:
+            return
+
+        # Find the project
+        project = next((p for p in self.projects if p['id'] == project_id), None)
+        if not project:
+            return
+
+        # Get content type prompts
+        content_types = project.get('content_types', {})
+        content_type = content_types.get(content_type_key, {})
+
+        # Add industry context to prompts
+        industry = project.get('industry', '')
+        sub_industry = project.get('sub_industry', '')
+        project_name = project.get('name', '')
+
+        context_prefix = f"Creating content for {project_name} ({industry} - {sub_industry}). "
+
+        # Update hidden prompt fields with context
+        caption_prompt = context_prefix + content_type.get('caption_prompt', '')
+        hashtag_prompt = context_prefix + content_type.get('hashtag_prompt', '')
+        keyword_prompt = context_prefix + content_type.get('keyword_prompt', '')
+
+        self.caption_prompt.setText(caption_prompt)
+        self.hashtag_prompt.setText(hashtag_prompt)
+        self.keyword_prompt.setText(keyword_prompt)
+
+        # Auto-regenerate if media is already selected
+        if self.current_media_path:
+            content_type_name = content_type.get('name', 'Unknown')
+            self.append_log(f"Content type changed to: {project_name} - {content_type_name} - Regenerating...")
+            self.generate_ai_content()
+
     def generate_ai_content(self):
         """Generate caption, hashtags, and keywords using AI."""
         print(f"DEBUG: generate_ai_content called, media_path={self.current_media_path}")
@@ -2263,8 +3597,15 @@ class SocialRocket(QMainWindow):
             )
             return
 
+        # Get prompts from selected preset (stored in hidden fields by on_preset_changed)
+        caption_prompt = self.caption_prompt.text()
+        hashtag_prompt = self.hashtag_prompt.text()
+        keyword_prompt = self.keyword_prompt.text()
+
         print("DEBUG: Starting AI generation...")
-        self.append_log("Generating AI content...")
+        project_name = self.project_selector.currentText()
+        content_type_name = self.content_type_selector.currentText()
+        self.append_log(f"Generating AI content for {project_name} - {content_type_name}...")
         self.status.showMessage("Analyzing media with AI...")
 
         # Show loading state in fields
@@ -2277,9 +3618,9 @@ class SocialRocket(QMainWindow):
             print("DEBUG: Thread started, calling AI service...")
             result = self.ai_service.analyze_media(
                 self.current_media_path,
-                self.caption_prompt.text(),
-                self.hashtag_prompt.text(),
-                self.keyword_prompt.text()
+                caption_prompt,
+                hashtag_prompt,
+                keyword_prompt
             )
             print(f"DEBUG: AI service returned: {result}")
 
@@ -2461,7 +3802,11 @@ class SocialRocket(QMainWindow):
 
     def post_now(self):
         """Post the current content immediately."""
+        print("DEBUG: post_now() called")
+
         if not self.current_media_path:
+            print("DEBUG: No media path, returning")
+            self.append_log("No media selected. Please select a creative first.")
             return
 
         caption = self.caption_input.toPlainText().strip()
@@ -2472,25 +3817,56 @@ class SocialRocket(QMainWindow):
             full_text += "\n\n" + hashtags
 
         platforms = self.get_selected_platforms()
+        print(f"DEBUG: Selected platforms: {platforms}")
 
         if not platforms:
             self.append_log("No platforms selected.")
             return
 
-        self.append_log("Posting now...")
+        dry_run = self.is_dry_run()
+        print(f"DEBUG: is_dry_run() = {dry_run}")
+        self.append_log(f"Posting now... (Mode: {'DRY RUN' if dry_run else 'LIVE'})")
+
+        # Track results for history
+        results = {}
 
         for p in platforms:
-            if DRY_RUN:
+            if dry_run:
                 self.append_log(
                     f"[DRY RUN] Would post to {p}: {full_text[:80]!r} "
                     f"(media: {os.path.basename(self.current_media_path)})"
                 )
+                results[p] = "Dry run - not posted"
             else:
-                ok, info = self.post_to_platform(p, full_text, self.current_media_path)
-                if ok:
-                    self.append_log(f"[LIVE] {info}")
-                else:
-                    self.append_log(f"[LIVE] Failed to post to {p}: {info}")
+                print(f"DEBUG: About to call post_to_platform for {p}")
+                self.append_log(f"[LIVE] Attempting to post to {p}...")
+                try:
+                    ok, info = self.post_to_platform(p, full_text, self.current_media_path)
+                    print(f"DEBUG: post_to_platform returned: ok={ok}, info={info}")
+                    if ok:
+                        self.append_log(f"[LIVE] ✓ {info}")
+                        results[p] = f"Success: {info}"
+                    else:
+                        self.append_log(f"[LIVE] ✗ Failed to post to {p}: {info}")
+                        results[p] = f"Failed: {info}"
+                except Exception as e:
+                    print(f"DEBUG: Exception in post_to_platform: {e}")
+                    self.append_log(f"[LIVE] ✗ Error posting to {p}: {e}")
+                    results[p] = f"Error: {e}"
+
+        # Add to history
+        post_data = {
+            'id': str(uuid.uuid4())[:8],
+            'media_path': self.current_media_path,
+            'caption': caption,
+            'hashtags': hashtags,
+            'keywords': self.keyword_input.text().strip(),
+            'platforms': platforms,
+            'created_at': datetime.now().isoformat(),
+            'scheduled_time': ''  # Immediate post, no schedule
+        }
+        add_to_history(post_data, platforms, results)
+        self.append_log(f"Posted immediately. Added to history.")
 
         self.clear_current()
 
@@ -2639,24 +4015,39 @@ class SocialRocket(QMainWindow):
     def _scheduler_loop(self):
         """Check for due posts every 30 seconds."""
         while self.scheduler_running:
+            print(f"DEBUG: Scheduler loop running at {datetime.now()}")
             self.check_due_posts()
             time.sleep(30)
 
     def check_due_posts(self):
         """Check if any posts are due to be published."""
         now = datetime.now()
+        print(f"DEBUG: check_due_posts() called, now={now}, queue has {len(self.queue_data)} posts")
+
+        # Reload queue data to get latest (in case it was modified)
+        self.load_queue_data()
+        print(f"DEBUG: After reload, queue has {len(self.queue_data)} posts")
 
         # Find posts that are due
         due_posts = []
         for post in self.queue_data:
             scheduled_time = post.get('scheduled_time', '')
+            post_id = post.get('id', 'unknown')
+            print(f"DEBUG: Checking post {post_id}, scheduled_time='{scheduled_time}'")
             if scheduled_time:
                 try:
                     dt = datetime.fromisoformat(scheduled_time)
+                    print(f"DEBUG: Post {post_id}: scheduled={dt}, now={now}, due={dt <= now}")
                     if dt <= now:
                         due_posts.append(post)
-                except Exception:
-                    pass
+                        print(f"DEBUG: ✓ Found due post {post_id} scheduled for {dt}")
+                except Exception as e:
+                    print(f"DEBUG: Error parsing scheduled_time for {post_id}: {e}")
+
+        if due_posts:
+            print(f"DEBUG: Processing {len(due_posts)} due posts")
+        else:
+            print(f"DEBUG: No due posts found")
 
         # Post each due post
         for post in due_posts:
@@ -2683,31 +4074,51 @@ class SocialRocket(QMainWindow):
         else:
             self.append_log(f"Publishing post {post_id}")
 
-        for p in platforms:
-            if DRY_RUN:
-                self.append_log(
-                    f"[DRY RUN] Would post to {p}: {full_text[:80]!r} "
-                    f"(media: {os.path.basename(media_path) if media_path else 'none'})"
-                )
-            else:
-                ok, info = self.post_to_platform(p, full_text, media_path)
-                if ok:
-                    self.append_log(f"[LIVE] {info}")
+        # Track results for history
+        results = {}
+
+        try:
+            for p in platforms:
+                if self.is_dry_run():
+                    self.append_log(
+                        f"[DRY RUN] Would post to {p}: {full_text[:80]!r} "
+                        f"(media: {os.path.basename(media_path) if media_path else 'none'})"
+                    )
+                    results[p] = "Dry run - not posted"
                 else:
-                    self.append_log(f"[LIVE] Failed to post to {p}: {info}")
+                    try:
+                        ok, info = self.post_to_platform(p, full_text, media_path)
+                    except Exception as e:
+                        ok, info = False, f"Exception while posting: {e}"
+                    if ok:
+                        self.append_log(f"[LIVE] {info}")
+                        results[p] = f"Success: {info}"
+                    else:
+                        self.append_log(f"[LIVE] Failed to post to {p}: {info}")
+                        results[p] = f"Failed: {info}"
 
-        # Move to posted
-        os.makedirs(POSTED_DIR, exist_ok=True)
-        if media_path and os.path.exists(media_path):
-            new_path = os.path.join(POSTED_DIR, os.path.basename(media_path))
-            os.replace(media_path, new_path)
+            # Add to history
+            add_to_history(post, platforms, results)
+        except Exception as e:
+            # Ensure failures still get logged to history to avoid infinite retries
+            self.append_log(f"[ERROR] Scheduled post {post_id} crashed: {e}")
+            results["__error"] = str(e)
+            add_to_history(post, platforms, results)
+        finally:
+            # Move to posted folder and remove from queue so we don't spin forever
+            try:
+                os.makedirs(POSTED_DIR, exist_ok=True)
+                if media_path and os.path.exists(media_path):
+                    new_path = os.path.join(POSTED_DIR, os.path.basename(media_path))
+                    os.replace(media_path, new_path)
+            except Exception as e:
+                self.append_log(f"[WARN] Could not move media for {post_id}: {e}")
 
-        # Remove from queue
-        self.queue_data = [p for p in self.queue_data if p.get('id') != post_id]
-        self.save_queue_data()
+            self.queue_data = [p for p in self.queue_data if p.get('id') != post_id]
+            self.save_queue_data()
 
-        self.append_log(f"Completed post {post_id}.")
-        self.refresh_queue_display()
+            self.append_log(f"Completed post {post_id}. Added to history.")
+            self.refresh_queue_display()
 
     def post_to_platform(self, platform_name, text, img_path):
         """Dispatch to the correct per-platform function."""

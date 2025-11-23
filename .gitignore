@@ -10,10 +10,15 @@ venv/
 
 # Config with secrets
 config.json
+post_history.json
+projects.json
 
 # Queue data (contains local paths)
 queue/
 posted/
+
+# Browser sessions (contains cookies/auth)
+.browser_sessions/
 
 # IDE
 .idea/
