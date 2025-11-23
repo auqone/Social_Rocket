@@ -1,0 +1,30 @@
+/Users/nicholashanks/.pyenv/versions/3.10.13/lib/python3.10/site-packages/google/api_core/_python_version_support.py:266: FutureWarning: You are using a Python version (3.10.13) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2026-10-04). Please upgrade to the latest Python version, or at least Python 3.11, to continue receiving updates for google.api_core past that date.
+  warnings.warn(message, FutureWarning)
+1Password error for X (Twitter)/username: No accounts configured for use with 1Password CLI.
+
+ - Turn on the 1Password desktop app integration to sign in with the accounts you've added to the app: https://developer.1password.com/docs/cli/app-integration/ for details.
+ - Add an account manually with 'op account add' and sign in by entering your password on the command line. See 'op account add --help' for details.
+ - Authenticate using a 1Password service account by setting the 'OP_SERVICE_ACCOUNT_TOKEN' environment variable to your service account token. Learn more: https://developer.1password.com/docs/service-accounts/ 
+ - Use 1Password CLI with a Connect server by setting the 'OP_CONNECT_HOST' and 'OP_CONNECT_TOKEN' environment variables to your Connect host and token, respectively. Learn more: https://developer.1password.com/docs/connect/
+
+1Password error for X (Twitter)/email: No accounts configured for use with 1Password CLI.
+
+ - Turn on the 1Password desktop app integration to sign in with the accounts you've added to the app: https://developer.1password.com/docs/cli/app-integration/ for details.
+ - Add an account manually with 'op account add' and sign in by entering your password on the command line. See 'op account add --help' for details.
+ - Authenticate using a 1Password service account by setting the 'OP_SERVICE_ACCOUNT_TOKEN' environment variable to your service account token. Learn more: https://developer.1password.com/docs/service-accounts/ 
+ - Use 1Password CLI with a Connect server by setting the 'OP_CONNECT_HOST' and 'OP_CONNECT_TOKEN' environment variables to your Connect host and token, respectively. Learn more: https://developer.1password.com/docs/connect/
+
+1Password error for X (Twitter)/user: No accounts configured for use with 1Password CLI.
+
+ - Turn on the 1Password desktop app integration to sign in with the accounts you've added to the app: https://developer.1password.com/docs/cli/app-integration/ for details.
+ - Add an account manually with 'op account add' and sign in by entering your password on the command line. See 'op account add --help' for details.
+ - Authenticate using a 1Password service account by setting the 'OP_SERVICE_ACCOUNT_TOKEN' environment variable to your service account token. Learn more: https://developer.1password.com/docs/service-accounts/ 
+ - Use 1Password CLI with a Connect server by setting the 'OP_CONNECT_HOST' and 'OP_CONNECT_TOKEN' environment variables to your Connect host and token, respectively. Learn more: https://developer.1password.com/docs/connect/
+
+1Password error for X (Twitter)/password: No accounts configured for use with 1Password CLI.
+
+ - Turn on the 1Password desktop app integration to sign in with the accounts you've added to the app: https://developer.1password.com/docs/cli/app-integration/ for details.
+ - Add an account manually with 'op account add' and sign in by entering your password on the command line. See 'op account add --help' for details.
+ - Authenticate using a 1Password service account by setting the 'OP_SERVICE_ACCOUNT_TOKEN' environment variable to your service account token. Learn more: https://developer.1password.com/docs/service-accounts/ 
+ - Use 1Password CLI with a Connect server by setting the 'OP_CONNECT_HOST' and 'OP_CONNECT_TOKEN' environment variables to your Connect host and token, respectively. Learn more: https://developer.1password.com/docs/connect/
+
