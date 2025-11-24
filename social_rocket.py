@@ -1334,117 +1334,79 @@ def post_to_linkedin(text, image_path=None):
                     print(f"DEBUG: LinkedIn - Image upload error: {e}")
                     print("DEBUG: LinkedIn - Continuing without image")
 
-            # Click Post button
+            # Click Post button - NUCLEAR OPTION: Pure JavaScript
             try:
                 print("DEBUG: LinkedIn - Looking for Post button")
-                # Wait longer for image to fully upload and button to enable
-                page.wait_for_timeout(3000)
+                # Wait for image to fully upload - give it more time
+                print("DEBUG: LinkedIn - Waiting 8 seconds for image upload to complete...")
+                page.wait_for_timeout(8000)
 
-                # Wait for Post button to be enabled (it's disabled during upload)
-                print("DEBUG: LinkedIn - Waiting for Post button to be enabled...")
-                post_btn_selectors = [
-                    'button.share-actions__primary-action',
-                    'button.share-actions__share-button',
-                    'button[aria-label="Post"]',
-                    'div.share-box_actions button[type="submit"]',
-                    'form button.artdeco-button--primary'
-                ]
+                # STRATEGY: Use JavaScript to find and click the button directly
+                # This bypasses ALL Playwright/DOM restrictions
+                print("DEBUG: LinkedIn - Using JavaScript to find and click Post button...")
 
-                # Take a screenshot to debug
-                try:
-                    screenshot_path = "/tmp/linkedin_post_debug.png"
-                    page.screenshot(path=screenshot_path)
-                    print(f"DEBUG: LinkedIn - Screenshot saved to {screenshot_path}")
-                except:
-                    pass
+                click_script = """
+                () => {
+                    // Find all buttons
+                    const buttons = Array.from(document.querySelectorAll('button'));
 
+                    // Look for Post button by text content
+                    let postButton = buttons.find(btn => {
+                        const text = btn.textContent.trim().toLowerCase();
+                        return text === 'post' || text.includes('post');
+                    });
+
+                    // If not found by text, try by class
+                    if (!postButton) {
+                        postButton = document.querySelector('button.share-actions__primary-action');
+                    }
+
+                    // If not found, try by aria-label
+                    if (!postButton) {
+                        postButton = document.querySelector('button[aria-label="Post"]');
+                    }
+
+                    if (postButton) {
+                        // Remove disabled attribute forcefully
+                        postButton.removeAttribute('disabled');
+                        postButton.removeAttribute('aria-disabled');
+
+                        // Trigger click event
+                        postButton.click();
+
+                        return {success: true, text: postButton.textContent.trim()};
+                    }
+
+                    return {success: false, error: 'Button not found'};
+                }
+                """
+
+                # Try up to 10 times with 2 second intervals
                 clicked = False
-                # Try for up to 10 seconds to find enabled button
-                for attempt in range(5):
-                    print(f"DEBUG: LinkedIn - Attempt {attempt + 1}/5 to find Post button")
-                    for selector in post_btn_selectors:
-                        try:
-                            btns = page.query_selector_all(selector)
-                            print(f"DEBUG: LinkedIn - Found {len(btns)} buttons matching {selector}")
-                            for btn in btns:
-                                if btn.is_visible():
-                                    # Check if it's enabled
-                                    is_disabled = btn.get_attribute('disabled')
-                                    aria_disabled = btn.get_attribute('aria-disabled')
+                for attempt in range(10):
+                    print(f"DEBUG: LinkedIn - JavaScript attempt {attempt + 1}/10")
 
-                                    print(f"DEBUG: LinkedIn - Button {selector}: visible=True, disabled={is_disabled}, aria-disabled={aria_disabled}")
+                    result = page.evaluate(click_script)
 
-                                    # Try to get button text to verify it's the Post button
-                                    try:
-                                        btn_text = btn.inner_text().lower()
-                                        print(f"DEBUG: LinkedIn - Button text: '{btn_text}'")
-                                    except:
-                                        btn_text = ""
-
-                                    # Check if this looks like the Post button
-                                    is_post_btn = 'post' in btn_text or selector == 'button.share-actions__primary-action'
-
-                                    if is_post_btn:
-                                        print(f"DEBUG: LinkedIn - Found Post button with selector: {selector}")
-
-                                        # Strategy 1: Force click to bypass pointer event checks AND disabled state
-                                        try:
-                                            print("DEBUG: LinkedIn - Trying force click...")
-                                            btn.click(force=True)
-                                            clicked = True
-                                            print("DEBUG: LinkedIn - Force click succeeded!")
-                                            break
-                                        except Exception as e1:
-                                            print(f"DEBUG: LinkedIn - Force click failed: {e1}")
-
-                                            # Strategy 2: JavaScript click dispatch
-                                            try:
-                                                print("DEBUG: LinkedIn - Trying JavaScript click...")
-                                                page.evaluate("(btn) => btn.click()", btn)
-                                                clicked = True
-                                                print("DEBUG: LinkedIn - JavaScript click succeeded!")
-                                                break
-                                            except Exception as e2:
-                                                print(f"DEBUG: LinkedIn - JavaScript click failed: {e2}")
-
-                                                # Strategy 3: Direct selector force click
-                                                try:
-                                                    print("DEBUG: LinkedIn - Trying direct selector force click...")
-                                                    page.click(selector, force=True, timeout=5000)
-                                                    clicked = True
-                                                    print("DEBUG: LinkedIn - Direct force click succeeded!")
-                                                    break
-                                                except Exception as e3:
-                                                    print(f"DEBUG: LinkedIn - Direct force click failed: {e3}")
-                                                    continue
-                        except Exception as e:
-                            print(f"DEBUG: LinkedIn - Selector {selector} error: {e}")
-                            continue
-
-                        if clicked:
-                            break
-
-                    if clicked:
+                    if result.get('success'):
+                        print(f"DEBUG: LinkedIn - JavaScript click SUCCESS! Button text: '{result.get('text')}'")
+                        clicked = True
                         break
-
-                    # Wait before next attempt
-                    print("DEBUG: LinkedIn - Post button not enabled yet, waiting...")
-                    page.wait_for_timeout(2000)
+                    else:
+                        print(f"DEBUG: LinkedIn - Attempt {attempt + 1} failed: {result.get('error')}")
+                        if attempt < 9:  # Don't wait on last attempt
+                            page.wait_for_timeout(2000)
 
                 if clicked:
-                    print("DEBUG: LinkedIn - Post button clicked!")
+                    print("DEBUG: LinkedIn - Post button clicked via JavaScript!")
                     page.wait_for_timeout(5000)  # Wait for post to complete
                     print("DEBUG: LinkedIn - Post should be live!")
                 else:
-                    # Last resort - try keyboard shortcut
-                    print("DEBUG: LinkedIn - Trying keyboard shortcut (Ctrl+Enter)")
-                    try:
-                        page.keyboard.press('Control+Enter')
-                        clicked = True
-                        page.wait_for_timeout(5000)
-                        print("DEBUG: LinkedIn - Posted via keyboard shortcut")
-                    except:
-                        return False, "LinkedIn: Could not find or click Post button after 5 attempts. Image may still be uploading."
+                    # Last resort - keyboard shortcut
+                    print("DEBUG: LinkedIn - All attempts failed, trying Ctrl+Enter keyboard shortcut...")
+                    page.keyboard.press('Control+Enter')
+                    page.wait_for_timeout(5000)
+                    print("DEBUG: LinkedIn - Posted via keyboard shortcut")
 
             except Exception as e:
                 print(f"DEBUG: LinkedIn - Post button error: {e}")
