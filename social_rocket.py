@@ -1199,7 +1199,14 @@ def post_to_linkedin(text, image_path=None):
                 print(f"DEBUG: LinkedIn - Current URL: {page.url}")
                 if "checkpoint" in page.url or "challenge" in page.url:
                     return False, "LinkedIn security challenge detected. Please log in manually first to verify your device."
-                page.wait_for_load_state("networkidle", timeout=30000)
+                # Don't wait for networkidle - LinkedIn feed never stops loading
+                # Just wait for domcontentloaded which is faster and more reliable
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    print("DEBUG: LinkedIn - Page loaded (domcontentloaded)")
+                except:
+                    print("DEBUG: LinkedIn - Continuing anyway after URL check")
+                    pass
 
             # Click "Start a post" button
             try:
