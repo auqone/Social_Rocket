@@ -1357,6 +1357,9 @@ def post_to_linkedin(text, image_path=None):
                     // Find all buttons
                     const buttons = Array.from(document.querySelectorAll('button'));
 
+                    // Collect ALL button texts for debugging
+                    const allButtonTexts = buttons.map(btn => btn.textContent.trim()).filter(t => t);
+
                     // Look for Post button by EXACT text match (not "Start a post")
                     let postButton = buttons.find(btn => {
                         const text = btn.textContent.trim().toLowerCase();
@@ -1393,10 +1396,10 @@ def post_to_linkedin(text, image_path=None):
                         // Trigger click event
                         postButton.click();
 
-                        return {success: true, text: postButton.textContent.trim()};
+                        return {success: true, text: postButton.textContent.trim(), allButtons: allButtonTexts.slice(0, 20)};
                     }
 
-                    return {success: false, error: 'Button not found'};
+                    return {success: false, error: 'Button not found', allButtons: allButtonTexts.slice(0, 20)};
                 }
                 """
 
@@ -1413,6 +1416,8 @@ def post_to_linkedin(text, image_path=None):
                         break
                     else:
                         print(f"DEBUG: LinkedIn - Attempt {attempt + 1} failed: {result.get('error')}")
+                        if attempt == 0:  # Print all buttons on first attempt
+                            print(f"DEBUG: LinkedIn - Available buttons: {result.get('allButtons', [])}")
                         if attempt < 9:  # Don't wait on last attempt
                             page.wait_for_timeout(2000)
 
