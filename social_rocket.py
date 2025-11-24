@@ -1357,13 +1357,14 @@ def post_to_linkedin(text, image_path=None):
                     // Find all buttons
                     const buttons = Array.from(document.querySelectorAll('button'));
 
-                    // Look for Post button by text content
+                    // Look for Post button by EXACT text match (not "Start a post")
                     let postButton = buttons.find(btn => {
                         const text = btn.textContent.trim().toLowerCase();
-                        return text === 'post' || text.includes('post');
+                        // Must be exactly "post", not "start a post" or other variations
+                        return text === 'post';
                     });
 
-                    // If not found by text, try by class
+                    // If not found by exact text, try by class (primary action button)
                     if (!postButton) {
                         postButton = document.querySelector('button.share-actions__primary-action');
                     }
@@ -1371,6 +1372,17 @@ def post_to_linkedin(text, image_path=None):
                     // If not found, try by aria-label
                     if (!postButton) {
                         postButton = document.querySelector('button[aria-label="Post"]');
+                    }
+
+                    // Last resort: find button in share-actions area
+                    if (!postButton) {
+                        const shareActions = document.querySelector('.share-actions');
+                        if (shareActions) {
+                            const btns = shareActions.querySelectorAll('button');
+                            postButton = Array.from(btns).find(btn =>
+                                btn.textContent.trim().toLowerCase() === 'post'
+                            );
+                        }
                     }
 
                     if (postButton) {
