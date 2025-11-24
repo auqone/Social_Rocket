@@ -1365,42 +1365,49 @@ def post_to_linkedin(text, image_path=None):
 
                                     print(f"DEBUG: LinkedIn - Button {selector}: visible=True, disabled={is_disabled}, aria-disabled={aria_disabled}")
 
-                                    if not is_disabled and aria_disabled != 'true':
+                                    # Try to get button text to verify it's the Post button
+                                    try:
                                         btn_text = btn.inner_text().lower()
                                         print(f"DEBUG: LinkedIn - Button text: '{btn_text}'")
-                                        if 'post' in btn_text or selector == 'button.share-actions__primary-action':
-                                            print(f"DEBUG: LinkedIn - Clicking Post button: {selector}")
+                                    except:
+                                        btn_text = ""
 
-                                            # Strategy 1: Force click to bypass pointer event checks
+                                    # Check if this looks like the Post button
+                                    is_post_btn = 'post' in btn_text or selector == 'button.share-actions__primary-action'
+
+                                    if is_post_btn:
+                                        print(f"DEBUG: LinkedIn - Found Post button with selector: {selector}")
+
+                                        # Strategy 1: Force click to bypass pointer event checks AND disabled state
+                                        try:
+                                            print("DEBUG: LinkedIn - Trying force click...")
+                                            btn.click(force=True)
+                                            clicked = True
+                                            print("DEBUG: LinkedIn - Force click succeeded!")
+                                            break
+                                        except Exception as e1:
+                                            print(f"DEBUG: LinkedIn - Force click failed: {e1}")
+
+                                            # Strategy 2: JavaScript click dispatch
                                             try:
-                                                print("DEBUG: LinkedIn - Trying force click...")
-                                                btn.click(force=True)
+                                                print("DEBUG: LinkedIn - Trying JavaScript click...")
+                                                page.evaluate("(btn) => btn.click()", btn)
                                                 clicked = True
-                                                print("DEBUG: LinkedIn - Force click succeeded!")
+                                                print("DEBUG: LinkedIn - JavaScript click succeeded!")
                                                 break
-                                            except Exception as e1:
-                                                print(f"DEBUG: LinkedIn - Force click failed: {e1}")
+                                            except Exception as e2:
+                                                print(f"DEBUG: LinkedIn - JavaScript click failed: {e2}")
 
-                                                # Strategy 2: JavaScript click dispatch
+                                                # Strategy 3: Direct selector force click
                                                 try:
-                                                    print("DEBUG: LinkedIn - Trying JavaScript click...")
-                                                    page.evaluate("(btn) => btn.click()", btn)
+                                                    print("DEBUG: LinkedIn - Trying direct selector force click...")
+                                                    page.click(selector, force=True, timeout=5000)
                                                     clicked = True
-                                                    print("DEBUG: LinkedIn - JavaScript click succeeded!")
+                                                    print("DEBUG: LinkedIn - Direct force click succeeded!")
                                                     break
-                                                except Exception as e2:
-                                                    print(f"DEBUG: LinkedIn - JavaScript click failed: {e2}")
-
-                                                    # Strategy 3: Direct selector force click
-                                                    try:
-                                                        print("DEBUG: LinkedIn - Trying direct selector force click...")
-                                                        page.click(selector, force=True)
-                                                        clicked = True
-                                                        print("DEBUG: LinkedIn - Direct force click succeeded!")
-                                                        break
-                                                    except Exception as e3:
-                                                        print(f"DEBUG: LinkedIn - Direct force click failed: {e3}")
-                                                        continue
+                                                except Exception as e3:
+                                                    print(f"DEBUG: LinkedIn - Direct force click failed: {e3}")
+                                                    continue
                         except Exception as e:
                             print(f"DEBUG: LinkedIn - Selector {selector} error: {e}")
                             continue
