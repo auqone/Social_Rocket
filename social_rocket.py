@@ -1350,6 +1350,14 @@ def post_to_linkedin(text, image_path=None):
                     'form button.artdeco-button--primary'
                 ]
 
+                # Take a screenshot to debug
+                try:
+                    screenshot_path = "/tmp/linkedin_post_debug.png"
+                    page.screenshot(path=screenshot_path)
+                    print(f"DEBUG: LinkedIn - Screenshot saved to {screenshot_path}")
+                except:
+                    pass
+
                 clicked = False
                 # Try for up to 10 seconds to find enabled button
                 for attempt in range(5):
@@ -1357,6 +1365,7 @@ def post_to_linkedin(text, image_path=None):
                     for selector in post_btn_selectors:
                         try:
                             btns = page.query_selector_all(selector)
+                            print(f"DEBUG: LinkedIn - Found {len(btns)} buttons matching {selector}")
                             for btn in btns:
                                 if btn.is_visible():
                                     # Check if it's enabled
