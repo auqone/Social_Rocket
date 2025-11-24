@@ -1246,7 +1246,6 @@ def post_to_linkedin(text, image_path=None):
 
             # Wait for and fill the post editor
             try:
-                print("DEBUG: LinkedIn - Looking for post editor")
                 editor_selectors = [
                     'div.ql-editor[data-placeholder="What do you want to talk about?"]',
                     'div.ql-editor',
@@ -1256,182 +1255,74 @@ def post_to_linkedin(text, image_path=None):
 
                 editor = None
                 for selector in editor_selectors:
-                    print(f"DEBUG: LinkedIn - Trying editor selector: {selector}")
                     try:
                         page.wait_for_selector(selector, timeout=5000)
                         editor = page.query_selector(selector)
                         if editor:
-                            print(f"DEBUG: LinkedIn - Found editor: {selector}")
                             break
-                    except Exception as e:
-                        print(f"DEBUG: LinkedIn - Editor selector failed: {selector} - {e}")
+                    except:
                         continue
 
                 if not editor:
                     return False, "LinkedIn: post editor not found."
 
                 # Click and type into editor
-                print("DEBUG: LinkedIn - Typing post text")
                 editor.click()
-                page.wait_for_timeout(500)
                 page.keyboard.type(text, delay=10)
                 page.wait_for_timeout(1000)
-                print("DEBUG: LinkedIn - Text entered successfully")
             except Exception as e:
-                print(f"DEBUG: LinkedIn - Text fill error: {e}")
                 return False, f"LinkedIn: error filling text: {e}"
-
-            print(f"DEBUG: LinkedIn - Checking for image: {image_path if image_path else 'None'}")
-            print(f"DEBUG: LinkedIn - Image exists: {os.path.exists(image_path) if image_path else False}")
 
             # Upload image if provided
             if image_path and os.path.exists(image_path):
                 try:
-                    print(f"DEBUG: LinkedIn - Uploading image: {os.path.basename(image_path)}")
                     # Click the image/media button
                     media_btn_selectors = [
                         'button[aria-label*="Add a photo"]',
                         'button[aria-label*="Add media"]',
-                        'button.share-creation-state__image-preview-button',
-                        'button[data-test-icon="image-medium"]',
-                        'li[data-test-sharing-add-image] button'
+                        'button.image-sharing-detour-button',
+                        'li.image-sharing-detour-button button'
                     ]
 
-                    clicked = False
                     for selector in media_btn_selectors:
-                        print(f"DEBUG: LinkedIn - Trying media button: {selector}")
                         try:
                             btn = page.query_selector(selector)
-                            if btn and btn.is_visible():
-                                print(f"DEBUG: LinkedIn - Found media button: {selector}")
+                            if btn:
                                 btn.click()
-                                clicked = True
                                 break
-                        except Exception as e:
-                            print(f"DEBUG: LinkedIn - Media button failed: {selector} - {e}")
+                        except:
                             continue
 
-                    if not clicked:
-                        print("DEBUG: LinkedIn - No media button found, trying file input directly")
-
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1000)
 
                     # Find file input and upload
-                    print("DEBUG: LinkedIn - Looking for file input")
-                    file_input = page.query_selector('input[type="file"][accept*="image"]')
-                    if not file_input:
-                        file_input = page.query_selector('input[type="file"]')
-
+                    file_input = page.query_selector('input[type="file"]')
                     if file_input:
-                        print(f"DEBUG: LinkedIn - Setting file: {image_path}")
                         file_input.set_input_files(image_path)
-                        print("DEBUG: LinkedIn - Waiting for image to upload...")
-                        page.wait_for_timeout(7000)  # Wait longer for upload
-                        print("DEBUG: LinkedIn - Image should be uploaded")
-                    else:
-                        print("DEBUG: LinkedIn - WARNING: File input not found, posting without image")
+                        page.wait_for_timeout(5000)  # Wait for upload
                 except Exception as e:
-                    print(f"DEBUG: LinkedIn - Image upload error: {e}")
-                    print("DEBUG: LinkedIn - Continuing without image")
+                    print(f"LinkedIn: Image upload warning (continuing): {e}")
 
             # Click Post button
             try:
-                print("DEBUG: LinkedIn - Looking for Post button")
-                # Wait longer for image to fully upload and button to enable
-                page.wait_for_timeout(3000)
-
-                # Wait for Post button to be enabled (it's disabled during upload)
-                print("DEBUG: LinkedIn - Waiting for Post button to be enabled...")
                 post_btn_selectors = [
                     'button.share-actions__primary-action',
-                    'button.share-actions__share-button',
                     'button[aria-label="Post"]',
-                    'div.share-box_actions button[type="submit"]',
-                    'form button.artdeco-button--primary'
+                    'button:has-text("Post")',
+                    'button.artdeco-button--primary:has-text("Post")'
                 ]
 
-                clicked = False
-                # Try for up to 10 seconds to find enabled button
-                for attempt in range(5):
-                    print(f"DEBUG: LinkedIn - Attempt {attempt + 1}/5 to find Post button")
-                    for selector in post_btn_selectors:
-                        try:
-                            btns = page.query_selector_all(selector)
-                            for btn in btns:
-                                if btn.is_visible():
-                                    # Check if it's enabled
-                                    is_disabled = btn.get_attribute('disabled')
-                                    aria_disabled = btn.get_attribute('aria-disabled')
-
-                                    print(f"DEBUG: LinkedIn - Button {selector}: visible=True, disabled={is_disabled}, aria-disabled={aria_disabled}")
-
-                                    if not is_disabled and aria_disabled != 'true':
-                                        btn_text = btn.inner_text().lower()
-                                        print(f"DEBUG: LinkedIn - Button text: '{btn_text}'")
-                                        if 'post' in btn_text or selector == 'button.share-actions__primary-action':
-                                            print(f"DEBUG: LinkedIn - Clicking Post button: {selector}")
-
-                                            # Strategy 1: Force click to bypass pointer event checks
-                                            try:
-                                                print("DEBUG: LinkedIn - Trying force click...")
-                                                btn.click(force=True)
-                                                clicked = True
-                                                print("DEBUG: LinkedIn - Force click succeeded!")
-                                                break
-                                            except Exception as e1:
-                                                print(f"DEBUG: LinkedIn - Force click failed: {e1}")
-
-                                                # Strategy 2: JavaScript click dispatch
-                                                try:
-                                                    print("DEBUG: LinkedIn - Trying JavaScript click...")
-                                                    page.evaluate("(btn) => btn.click()", btn)
-                                                    clicked = True
-                                                    print("DEBUG: LinkedIn - JavaScript click succeeded!")
-                                                    break
-                                                except Exception as e2:
-                                                    print(f"DEBUG: LinkedIn - JavaScript click failed: {e2}")
-
-                                                    # Strategy 3: Direct selector force click
-                                                    try:
-                                                        print("DEBUG: LinkedIn - Trying direct selector force click...")
-                                                        page.click(selector, force=True)
-                                                        clicked = True
-                                                        print("DEBUG: LinkedIn - Direct force click succeeded!")
-                                                        break
-                                                    except Exception as e3:
-                                                        print(f"DEBUG: LinkedIn - Direct force click failed: {e3}")
-                                                        continue
-                        except Exception as e:
-                            print(f"DEBUG: LinkedIn - Selector {selector} error: {e}")
-                            continue
-
-                        if clicked:
-                            break
-
-                    if clicked:
-                        break
-
-                    # Wait before next attempt
-                    print("DEBUG: LinkedIn - Post button not enabled yet, waiting...")
-                    page.wait_for_timeout(2000)
-
-                if clicked:
-                    print("DEBUG: LinkedIn - Post button clicked!")
-                    page.wait_for_timeout(5000)  # Wait for post to complete
-                    print("DEBUG: LinkedIn - Post should be live!")
-                else:
-                    # Last resort - try keyboard shortcut
-                    print("DEBUG: LinkedIn - Trying keyboard shortcut (Ctrl+Enter)")
+                for selector in post_btn_selectors:
                     try:
-                        page.keyboard.press('Control+Enter')
-                        clicked = True
-                        page.wait_for_timeout(5000)
-                        print("DEBUG: LinkedIn - Posted via keyboard shortcut")
+                        btn = page.query_selector(selector)
+                        if btn and btn.is_enabled():
+                            btn.click()
+                            break
                     except:
-                        return False, "LinkedIn: Could not find or click Post button after 5 attempts. Image may still be uploading."
+                        continue
 
+                page.wait_for_timeout(5000)
             except Exception as e:
-                print(f"DEBUG: LinkedIn - Post button error: {e}")
                 return False, f"LinkedIn: error clicking post button: {e}"
 
             return True, "Posted to LinkedIn"
