@@ -29,3 +29,8 @@ posted/
 # OS
 .DS_Store
 Thumbs.db
+
+# Additional sensitive files
+config.json.backup
+debug_output.log
+app_output.log
